@@ -1,0 +1,17 @@
+server_port: 8443
+milvus_host: 10.240.35.173
+milvus_port: 19530
+milvus_user: ""
+milvus_password: ""
+milvus_db_name: cosmoData
+
+object_storage:
+  bucket: cosmo-storage-develop
+  endpoint: https://gage.ap-northeast-2.samsungspc.com
+  access_key: AKIA5PMO9S8UVFAFT68P
+  secret_key: gCBynEY51EVVuV901dEybGl8JnwoPkQy9YK7AbjW
+
+feature_extractor:
+  host: localhost
+  port: 6789
+  
