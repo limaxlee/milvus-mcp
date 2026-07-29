@@ -35,3 +35,4 @@ class FeatureExtractor:
             raise
         except Exception as e:
             logger.exception(f"Failed to extract embeddings of data {filename}: {str(e)}")
+            raise 

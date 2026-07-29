@@ -21,4 +21,15 @@ PRESIGNED_URL_EXPIRED_IN = 7200
 class DataFields(StrEnum):
     PK = "pk"
     PREDICTION = "prediction"
+    VECTOR = "feature_vector"
     DATA_URI = "data_uri"
+    FILENAME = "filename"
+
+
+DETECTION_COLLECTION_SUFFIX = "_object"
+
+
+class MetricTypes(StrEnum):
+    COSINE = "COSINE"
+    IP = "IP"
+    L2 = "L2"

@@ -25,7 +25,7 @@ class ObjectStorageClient:
         }
         self._bucket = self._config["bucket"]
 
-    async def __aenter__(self):
+    async def connect(self):
         if self._client:
             return self
 
@@ -47,11 +47,15 @@ class ObjectStorageClient:
             logger.exception(f"Unexpected error occurred during object storage connection: {str(e)}")
             raise
 
-    async def __aexit__(self, *exception_details):
-        if self._client:
-            await self._client.close()
-        await self._exit_stack.__aexit__(*exception_details)
-        self._client = None
+    async def close(self):
+        if not self._client:
+            return
+
+        try:
+            await self._exit_stack.aclose()
+            logger.info("Closed object storage client")
+        finally:
+            self._client = None
 
     async def retrieve_object(self, key: str, bucket: str = None) -> bytes | None:
         bucket = bucket if bucket else self._bucket
@@ -80,6 +84,3 @@ class ObjectStorageClient:
         except Exception as e:
             logger.exception(f"Failed to generate presigned url for {key} from bucket {bucket}: {e}")
             return ""
-
-    def close(self):
-        self._client.close()

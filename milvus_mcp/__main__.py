@@ -16,15 +16,14 @@ from milvus_mcp.utils import initialize_logger
 @asynccontextmanager
 async def lifespan(mcp: FastMCP) -> AsyncIterator[MilvusContext]:
     storage_client = ObjectStorageClient()
-    await storage_client.__aenter__()
+    await storage_client.connect()
 
     connector = MilvusConnector()
-
     try:
         yield MilvusContext(connector)
     finally:
         await connector.close()
-        await storage_client.__aexit__()
+        await storage_client.close()
 
 
 mcp = FastMCP(name="Milvus MCP Server", lifespan=lifespan)

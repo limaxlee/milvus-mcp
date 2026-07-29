@@ -61,12 +61,13 @@ def mock_async_milvus_client(mocker):
     client.insert = mocker.AsyncMock(return_value=["462025919837366264"])
     client.delete_entities = mocker.AsyncMock(return_value={"delete_count": 1})
     client.delete = mocker.AsyncMock(return_value={"delete_count": 1})
-    client.search = mocker.AsyncMock(return_value=[[
-        {"id": 462025919837366269, "distance": 0.9999997615814209, "entity": {}},
-        {"id": 462025919837366277, "distance": 0.9594927430152893, "entity": {}},
-        {"id": 462025919837366263, "distance": 0.9590328335762024, "entity": {}},
-        {"id": 462025919837366274, "distance": 0.95219886302948, "entity": {}},
-        {"id": 462025919837366272, "distance": 0.951366126537323, "entity": {}}
+    # built per call so that in-place mutation of the hits does not leak between searches
+    client.search = mocker.AsyncMock(side_effect=lambda *args, **kwargs: [[
+        {"id": 462025919837366269, "distance": 0.9999997615814209, "entity": {"data_uri": "images/image_1.jpg"}},
+        {"id": 462025919837366277, "distance": 0.9594927430152893, "entity": {"data_uri": "images/image_2.jpg"}},
+        {"id": 462025919837366263, "distance": 0.9590328335762024, "entity": {"data_uri": "images/image_3.jpg"}},
+        {"id": 462025919837366274, "distance": 0.95219886302948, "entity": {"data_uri": "images/image_4.jpg"}},
+        {"id": 462025919837366272, "distance": 0.951366126537323, "entity": {"data_uri": "images/image_5.jpg"}}
     ]])
     client.vector_search = mocker.AsyncMock(return_value=[[
         {"id": 462025919837366269, "distance": 0.9999997615814209, "entity": {}},
@@ -82,10 +83,33 @@ def mock_async_milvus_client(mocker):
     return client
 
 @pytest.fixture
-def mock_connector(mocker, mock_async_milvus_client):
+def mock_storage_client(mocker):
+    storage = mocker.MagicMock(name="ObjectStorageClient")
+    storage.connect = mocker.AsyncMock(return_value=storage)
+    storage.close = mocker.AsyncMock(return_value=None)
+    storage.retrieve_object = mocker.AsyncMock(return_value=b"image-bytes")
+    storage.get_presigned_url = mocker.AsyncMock(return_value="https://storage.local/presigned/image.jpg")
+
+    return storage
+
+
+@pytest.fixture
+def mock_feature_extractor(mocker):
+    extractor = mocker.MagicMock(name="FeatureExtractor")
+    extractor.extract_feature_vector = mocker.AsyncMock(return_value=[0.1, 0.2, 0.3])
+
+    return extractor
+
+
+@pytest.fixture
+def mock_connector(mocker, mock_async_milvus_client, mock_storage_client, mock_feature_extractor):
     mocker.patch("milvus_mcp.connector.connector.AsyncMilvusClient", return_value=mock_async_milvus_client)
     connector = MilvusConnector()
+    connector._storage = mock_storage_client
+    connector._extractor = mock_feature_extractor
     connector._mock_client = mock_async_milvus_client
+    connector._mock_storage = mock_storage_client
+    connector._mock_extractor = mock_feature_extractor
     yield connector
 
 

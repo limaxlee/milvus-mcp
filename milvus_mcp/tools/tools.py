@@ -4,7 +4,8 @@ from typing import Any
 from fastmcp.exceptions import ToolError
 from fastmcp.server import Context, FastMCP
 
-from common.constants import DIMENSION, METRIC_TYPE, LIMIT
+from common.constants import DIMENSION, METRIC_TYPE, LIMIT, BATCH_SIZE
+from milvus_mcp.schemas import SamplingResult
 
 logger = logging.getLogger(__name__)
 
@@ -347,3 +348,42 @@ async def milvus_extract_embeddings_and_vector_search(
         raise ToolError(
             f"Failed to extract embedding and vector search in {collection_name} collection of {data_uri}: {str(e)}"
         )
+
+
+@tools_mcp.tool()
+async def milvus_get_stratified_sampled_data(
+        ctx: Context,
+        collection_name: str,
+        vector_field: str,
+        sample_classes: dict[str, int],
+        metric_type: str = METRIC_TYPE,
+        keep_classes: list[str] | None = None,
+        output_fields: list[str] | None = None,
+        batch_size: int = BATCH_SIZE
+) -> SamplingResult:
+    """
+    Class-aware (stratified) sample collection using k-center greedy over its vector field
+
+    Args:
+        collection_name: Name of collection to sample
+        vector_field: Field containing vectors to sample over
+        sample_classes: Per-class sampling cap, e.g. {"Good": 800} — sample that class to 800
+        metric_type: Distance metric (COSINE, L2, IP), default to COSINE
+        keep_classes: If given, classes to retain entirely when sampling
+        output_fields: If given, selected columns are returned with these fields
+        batch_size: Number of data in single batch when scanning the collection data, default to 1000
+    """
+    try:
+        connector = ctx.request_context.lifespan_context.connector
+        return await connector.get_stratified_sampled_data(
+            collection_name=collection_name,
+            vector_field=vector_field,
+            metric_type=metric_type,
+            keep_classes=keep_classes,
+            sample_classes=sample_classes,
+            output_fields=output_fields,
+            batch_size=batch_size
+        )
+    except Exception as e:
+        raise ToolError(f"Failed to sample data in collection {collection_name}: {str(e)}")
+    

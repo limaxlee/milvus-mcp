@@ -1,5 +1,6 @@
 import pytest
 
+from common.constants import DataFields
 from milvus_mcp.connector.connector import MilvusConnector
 
 
@@ -120,6 +121,74 @@ class TestMilvusConnector:
         mock_connector._mock_client.query.side_effect = RuntimeError("Connector error")
         with pytest.raises(RuntimeError, match="Connector error"):
             await mock_connector.query_collection("collection_a", "image_name == 'image.jpg'")
+
+    @pytest.mark.asyncio
+    async def test_extract_embeddings_and_vector_search(self, mock_connector):
+        presigned_url = mock_connector._mock_storage.get_presigned_url.return_value
+        results = await mock_connector.extract_embeddings_and_vector_search(
+            collection_name="collection_a",
+            vector_field="vector",
+            filename="image.jpg",
+            data_uri="images/image.jpg",
+            content_type="image/jpeg"
+        )
+
+        assert len(results) == 5
+        assert all(result["entity"][DataFields.DATA_URI] == presigned_url for result in results)
+
+        mock_connector._mock_storage.retrieve_object.assert_awaited_once_with("images/image.jpg")
+        mock_connector._mock_extractor.extract_feature_vector.assert_awaited_once_with(
+            "collection_a", "image.jpg", b"image-bytes", "image/jpeg"
+        )
+        assert mock_connector._mock_client.search.await_count == 1
+        assert mock_connector._mock_storage.get_presigned_url.await_count == 5
+
+        # each failure below happens one stage earlier in the pipeline than the previous one
+        mock_connector._mock_storage.get_presigned_url.return_value = ""
+        with pytest.raises(ValueError, match="Failed to generate presigned URL"):
+            await mock_connector.extract_embeddings_and_vector_search(
+                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+            )
+
+        mock_connector._mock_client.search.side_effect = RuntimeError("Connector error")
+        with pytest.raises(RuntimeError, match="Connector error"):
+            await mock_connector.extract_embeddings_and_vector_search(
+                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+            )
+
+        mock_connector._mock_extractor.extract_feature_vector.return_value = []
+        with pytest.raises(ValueError, match="Failed to extract feature vector"):
+            await mock_connector.extract_embeddings_and_vector_search(
+                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+            )
+
+        mock_connector._mock_storage.retrieve_object.return_value = None
+        with pytest.raises(ValueError, match="Failed to retrieve"):
+            await mock_connector.extract_embeddings_and_vector_search(
+                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+            )
+
+    @pytest.mark.asyncio
+    async def test_extract_embeddings_and_vector_search_output_fields(self, mock_connector):
+        await mock_connector.extract_embeddings_and_vector_search(
+            "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+        )
+        assert mock_connector._mock_client.search.await_args.kwargs["output_fields"] == [DataFields.DATA_URI]
+
+        output_fields = ["prediction"]
+        await mock_connector.extract_embeddings_and_vector_search(
+            "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg", output_fields=output_fields
+        )
+        assert mock_connector._mock_client.search.await_args.kwargs["output_fields"] == \
+               ["prediction", DataFields.DATA_URI]
+        assert output_fields == ["prediction"]
+
+        output_fields = ["prediction", DataFields.DATA_URI]
+        await mock_connector.extract_embeddings_and_vector_search(
+            "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg", output_fields=output_fields
+        )
+        assert mock_connector._mock_client.search.await_args.kwargs["output_fields"] == \
+               ["prediction", DataFields.DATA_URI]
 
     @pytest.mark.asyncio
     async def test_close(self, mock_connector):
