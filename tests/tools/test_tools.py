@@ -3,14 +3,49 @@ import pytest
 import pytest_asyncio
 from fastmcp.exceptions import ToolError
 
+from common.constants import DataFields
 from milvus_mcp.tools import tools_mcp
-from milvus_mcp.schemas import SamplingResult
+from milvus_mcp.schemas import SamplingResult, VectorSearchResult
+
+
+def mock_search_hit(pk, distance, prediction):
+    return {
+        "id": pk,
+        "distance": distance,
+        "entity": {
+            DataFields.DATA_URI: f"uri_{pk}",
+            DataFields.FILENAME: f"file_{pk}.jpg",
+            DataFields.PREDICTION: prediction
+        }
+    }
+
+
+def mock_search_results():
+    return [[mock_search_hit(1, 0.99, "Good"), mock_search_hit(2, 0.95, "NG")]]
 
 
 @pytest_asyncio.fixture
 async def tools_by_name():
     tools = await tools_mcp.list_tools()
     return {tool.name: tool.fn for tool in tools}
+
+
+@pytest.fixture
+def mock_embedding_context(mocker, mock_context):
+    connector = mock_context.request_context.lifespan_context.connector
+
+    # fresh hits per call, since the presign step rewrites data_uri in place
+    connector._mock_client.search.side_effect = lambda *args, **kwargs: mock_search_results()
+
+    connector._storage.retrieve_object = mocker.AsyncMock(return_value=b"image-bytes")
+    connector._storage.get_presigned_url = mocker.AsyncMock(side_effect=lambda uri: f"https://presigned/{uri}")
+    connector._extractor = mocker.MagicMock(name="FeatureExtractor")
+    connector._extractor.extract_feature_vector = mocker.AsyncMock(return_value=[1.0, 2.0])
+
+    connector._mock_storage = connector._storage
+    connector._mock_extractor = connector._extractor
+
+    return mock_context
 
 
 class TestMilvusMCPTools:
@@ -164,29 +199,66 @@ class TestMilvusMCPTools:
             await tool(mock_context, "collection_a", [1.0, 2.0], "vector")
 
     @pytest.mark.asyncio
-    async def test_milvus_extract_embeddings_and_vector_search(self, mocker, tools_by_name, mock_context):
+    async def test_milvus_extract_embeddings_and_vector_search(self, mocker, tools_by_name, mock_embedding_context):
         tool = tools_by_name["milvus_extract_embeddings_and_vector_search"]
-        connector = mock_context.request_context.lifespan_context.connector
-        presigned_url = connector._mock_storage.get_presigned_url.return_value
+        connector = mock_embedding_context.request_context.lifespan_context.connector
 
-        result = await tool(mock_context, "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg")
-        assert result.search_data_count == 5
+        result = await tool(
+            mock_embedding_context, "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+        )
 
-        # connector._mock_storage.retrieve_object.assert_awaited_once_with("images/image.jpg")
-        # connector._mock_extractor.extract_feature_vector.assert_awaited_once_with(
-        #     "collection_a", "image.jpg", b"image-bytes", "image/jpeg"
-        # )
-        # assert connector._mock_client.search.await_count == 1
-        #
-        # mock_context.request_context.lifespan_context.connector.extract_embeddings_and_vector_search = \
-        #     mocker.AsyncMock(return_value=[])
-        # result = await tool(mock_context, "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg")
-        # assert result == "No vector search result for data images/image.jpg from collection_a"
-        #
-        # mock_context.request_context.lifespan_context.connector.extract_embeddings_and_vector_search = \
-        #     mocker.AsyncMock(side_effect=RuntimeError())
-        # with pytest.raises(ToolError):
-        #     await tool(mock_context, "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg")
+        assert isinstance(result, VectorSearchResult)
+        assert result.collection_name == "collection_a"
+        assert result.search_data_count == 2
+        assert result.search_data_keys == [1, 2]
+        assert [row[DataFields.DATA_URI] for row in result.search_data.values()] == [
+            "https://presigned/uri_1", "https://presigned/uri_2"
+        ]
+
+        connector._mock_storage.retrieve_object.assert_awaited_once_with("images/image.jpg")
+        connector._mock_extractor.extract_feature_vector.assert_awaited_once_with(
+            "collection_a", "image.jpg", b"image-bytes", "image/jpeg"
+        )
+        assert connector._mock_client.search.await_count == 1
+
+        expected_result = VectorSearchResult(collection_name="collection_a")
+        connector.extract_embeddings_and_vector_search = mocker.AsyncMock(return_value=expected_result)
+
+        result = await tool(
+            mock_embedding_context,
+            "collection_a",
+            "vector",
+            "image.jpg",
+            "images/image.jpg",
+            "image/jpeg",
+            3,
+            [DataFields.PK],
+            "L2",
+            "prediction == 'Good'",
+            0.5,
+            1.0
+        )
+
+        assert result == expected_result
+        connector.extract_embeddings_and_vector_search.assert_awaited_once_with(
+            collection_name="collection_a",
+            vector_field="vector",
+            filename="image.jpg",
+            data_uri="images/image.jpg",
+            content_type="image/jpeg",
+            limit=3,
+            output_fields=[DataFields.PK],
+            metric_type="L2",
+            filter_expression="prediction == 'Good'",
+            radius=0.5,
+            range_filter=1.0
+        )
+
+        connector.extract_embeddings_and_vector_search = mocker.AsyncMock(side_effect=RuntimeError("Connector error"))
+        with pytest.raises(ToolError, match="Failed to extract embeddings and vector search"):
+            await tool(
+                mock_embedding_context, "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+            )
 
     @pytest.mark.asyncio
     async def test_milvus_query_collection(self, mocker, tools_by_name, mock_context):

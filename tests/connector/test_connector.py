@@ -1,7 +1,7 @@
 import pytest
 
-from common.constants import DataFields, DETECTION_COLLECTION_SUFFIX
-from milvus_mcp.schemas import SamplingResult
+from common.constants import LIMIT, DataFields, DETECTION_COLLECTION_SUFFIX
+from milvus_mcp.schemas import SamplingResult, VectorSearchResult
 from milvus_mcp.connector.connector import MilvusConnector
 
 
@@ -15,6 +15,22 @@ def mock_data_row(pk, vector, prediction, data_uri=None, filename=None):
     }
 
 
+def mock_search_hit(pk, distance, prediction):
+    return {
+        "id": pk,
+        "distance": distance,
+        "entity": {
+            DataFields.DATA_URI: f"uri_{pk}",
+            DataFields.FILENAME: f"file_{pk}.jpg",
+            DataFields.PREDICTION: prediction
+        }
+    }
+
+
+def mock_search_results():
+    return [[mock_search_hit(1, 0.99, "Good"), mock_search_hit(2, 0.95, "NG")]]
+
+
 @pytest.fixture
 def stratified_sample_rows():
     return [
@@ -24,6 +40,22 @@ def stratified_sample_rows():
         mock_data_row(4, [5.0, 5.0], "NG"),
         mock_data_row(5, [5.1, 5.1], "NG")
     ]
+
+
+@pytest.fixture
+def mock_embedding_connector(mocker, mock_connector):
+    # fresh hits per call, since the presign step rewrites data_uri in place
+    mock_connector._mock_client.search.side_effect = lambda *args, **kwargs: mock_search_results()
+
+    mock_connector._storage.retrieve_object = mocker.AsyncMock(return_value=b"image-bytes")
+    mock_connector._storage.get_presigned_url = mocker.AsyncMock(side_effect=lambda uri: f"https://presigned/{uri}")
+    mock_connector._extractor = mocker.MagicMock(name="FeatureExtractor")
+    mock_connector._extractor.extract_feature_vector = mocker.AsyncMock(return_value=[1.0, 2.0])
+
+    mock_connector._mock_storage = mock_connector._storage
+    mock_connector._mock_extractor = mock_connector._extractor
+
+    return mock_connector
 
 
 class TestMilvusConnector:
@@ -134,6 +166,82 @@ class TestMilvusConnector:
         mock_connector._mock_client.search.side_effect = RuntimeError("Connector error")
         with pytest.raises(RuntimeError, match="Connector error"):
             await mock_connector.vector_search("collection_a", [1.0, 2.0], "vector")
+
+    @pytest.mark.asyncio
+    async def test_extract_embeddings_and_vector_search(self, mock_embedding_connector):
+        connector = mock_embedding_connector
+        result = await connector.extract_embeddings_and_vector_search(
+            "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+        )
+
+        assert isinstance(result, VectorSearchResult)
+        assert result.collection_name == "collection_a"
+        assert result.search_data_count == 2
+        assert result.search_data_keys == [1, 2]
+        assert result.search_data_distance == [0.99, 0.95]
+
+        connector._mock_storage.retrieve_object.assert_awaited_once_with("images/image.jpg")
+        connector._mock_extractor.extract_feature_vector.assert_awaited_once_with(
+            "collection_a", "image.jpg", b"image-bytes", "image/jpeg"
+        )
+        assert connector._mock_client.search.await_count == 1
+
+        search_kwargs = connector._mock_client.search.await_args.kwargs
+        assert search_kwargs["collection_name"] == "collection_a"
+        assert search_kwargs["data"] == [[1.0, 2.0]]
+        assert search_kwargs["anns_field"] == "vector"
+        assert search_kwargs["limit"] == LIMIT
+        assert set(search_kwargs["output_fields"]) == {
+            DataFields.DATA_URI, DataFields.FILENAME, DataFields.PREDICTION
+        }
+
+        assert connector._mock_storage.get_presigned_url.await_count == 2
+        assert [row[DataFields.DATA_URI] for row in result.search_data.values()] == [
+            "https://presigned/uri_1", "https://presigned/uri_2"
+        ]
+        assert [row[DataFields.FILENAME] for row in result.search_data.values()] == ["file_1.jpg", "file_2.jpg"]
+
+        await connector.extract_embeddings_and_vector_search(
+            "collection_a",
+            "vector",
+            "image.jpg",
+            "images/image.jpg",
+            "image/jpeg",
+            limit=3,
+            output_fields=[DataFields.PK],
+            filter_expression="prediction == 'Good'",
+            radius=0.5,
+            range_filter=1.0
+        )
+
+        search_kwargs = connector._mock_client.search.await_args.kwargs
+        assert search_kwargs["limit"] == 3
+        assert search_kwargs["filter"] == "prediction == 'Good'"
+        assert search_kwargs["search_params"]["params"]["radius"] == 0.5
+        assert search_kwargs["search_params"]["params"]["range_filter"] == 1.0
+        assert set(search_kwargs["output_fields"]) == {
+            DataFields.PK, DataFields.DATA_URI, DataFields.FILENAME, DataFields.PREDICTION
+        }
+
+        connector._mock_storage.retrieve_object.return_value = None
+        with pytest.raises(ValueError, match="Failed to retrieve images/image.jpg object from storage"):
+            await connector.extract_embeddings_and_vector_search(
+                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+            )
+
+        connector._mock_storage.retrieve_object.return_value = b"image-bytes"
+        connector._mock_extractor.extract_feature_vector.return_value = []
+        with pytest.raises(ValueError, match="Failed to extract feature vector from images/image.jpg object"):
+            await connector.extract_embeddings_and_vector_search(
+                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+            )
+
+        connector._mock_extractor.extract_feature_vector.return_value = [1.0, 2.0]
+        connector._mock_client.search.side_effect = RuntimeError("Connector error")
+        with pytest.raises(RuntimeError, match="Connector error"):
+            await connector.extract_embeddings_and_vector_search(
+                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+            )
 
     @pytest.mark.asyncio
     async def test_query_collection(self, mock_connector):
