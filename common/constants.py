@@ -14,6 +14,8 @@ HEALTH_CHECK_PORT = 9091
 
 BATCH_SIZE = 1000
 
+DETECTION_COLLECTION_SUFFIX = "_object"
+
 FEATURE_EXTRACTION_TIMEOUT = 60.0
 PRESIGNED_URL_EXPIRED_IN = 7200
 
@@ -26,10 +28,11 @@ class DataFields(StrEnum):
     FILENAME = "filename"
 
 
-DETECTION_COLLECTION_SUFFIX = "_object"
-
-
 class MetricTypes(StrEnum):
     COSINE = "COSINE"
     IP = "IP"
     L2 = "L2"
+
+
+class SamplingMethods(StrEnum):
+    K_CENTER_GREEDY = "k_center_greedy"

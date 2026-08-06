@@ -5,7 +5,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server import Context, FastMCP
 
 from common.constants import DIMENSION, METRIC_TYPE, LIMIT, BATCH_SIZE
-from milvus_mcp.schemas import SamplingResult
+from milvus_mcp.schemas import SamplingResult, VectorSearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +209,7 @@ async def milvus_vector_search(
         filter_expression: str | None = None,
         radius: float | None = None,
         range_filter: float | None = None
-) -> str:
+) -> VectorSearchResult:
     """
     Perform vector similarity search on a collection.
 
@@ -226,7 +226,7 @@ async def milvus_vector_search(
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        results = await connector.vector_search(
+        return await connector.vector_search(
             collection_name=collection_name,
             vector=vector,
             vector_field=vector_field,
@@ -237,17 +237,60 @@ async def milvus_vector_search(
             radius=radius,
             range_filter=range_filter
         )
-
-        if results:
-            output = f"Vector search results for {collection_name}:\n\n"
-            for result in results:
-                output += f"{result}\n\n"
-        else:
-            output = f"No vector search result for {collection_name}"
-
-        return output
     except Exception as e:
         raise ToolError(f"Failed to vector search in {collection_name} collection using {vector[:3]}: {str(e)}")
+
+
+@tools_mcp.tool()
+async def milvus_extract_embeddings_and_vector_search(
+        ctx: Context,
+        collection_name: str,
+        vector_field: str,
+        filename: str,
+        data_uri: str,
+        content_type: str,
+        limit: int = LIMIT,
+        output_fields: list[str] | None = None,
+        metric_type: str = METRIC_TYPE,
+        filter_expression: str | None = None,
+        radius: float | None = None,
+        range_filter: float | None = None
+) -> VectorSearchResult:
+    """
+    Extract the embeddings of the image and perform vector similarity search on a collection.
+
+    Args:
+        collection_name: Name of the collection to search
+        vector_field: Field containing vectors to search
+        filename: Name of the image file
+        data_uri: Key of the image file within object storage bucket
+        content_type: MIME type of the image (e.g. "image/jpeg", "image/png")
+        limit: Maximum number of results
+        output_fields: Fields to include in results
+        metric_type: Distance metric (COSINE, L2, IP)
+        filter_expression: Optional filter expression
+        radius: Optional lower bound for range search
+        range_filter: Optional upper bound for range search
+    """
+    try:
+        connector = ctx.request_context.lifespan_context.connector
+        return await connector.extract_embeddings_and_vector_search(
+            collection_name=collection_name,
+            vector_field=vector_field,
+            filename=filename,
+            data_uri=data_uri,
+            content_type=content_type,
+            limit=limit,
+            output_fields=output_fields,
+            metric_type=metric_type,
+            filter_expression=filter_expression,
+            radius=radius,
+            range_filter=range_filter
+        )
+    except Exception as e:
+        raise ToolError(
+            f"Failed to extract embeddings and vector search in {collection_name} collection of {data_uri}: {str(e)}"
+        )
 
 
 @tools_mcp.tool()
@@ -289,69 +332,7 @@ async def milvus_query_collection(
 
 
 @tools_mcp.tool()
-async def milvus_extract_embeddings_and_vector_search(
-        ctx: Context,
-        collection_name: str,
-        vector_field: str,
-        filename: str,
-        data_uri: str,
-        content_type: str,
-        limit: int = LIMIT,
-        output_fields: list[str] | None = None,
-        metric_type: str = METRIC_TYPE,
-        filter_expression: str | None = None,
-        radius: float | None = None,
-        range_filter: float | None = None
-) -> str:
-    """
-    Extract the embedding of the image and perform vector similarity search on a collection.
-
-    Args:
-        collection_name: Name of the collection to search
-        vector_field: Field containing vectors to search
-        filename: Name of the image file
-        data_uri: Key of the image file within object storage bucket
-        content_type: MIME type of the image (e.g. "image/jpeg", "image/png")
-        limit: Maximum number of results
-        output_fields: Fields to include in results
-        metric_type: Distance metric (COSINE, L2, IP)
-        filter_expression: Optional filter expression
-        radius: Optional lower bound for range search
-        range_filter: Optional upper bound for range search
-    """
-    try:
-        connector = ctx.request_context.lifespan_context.connector
-
-        results = await connector.extract_embeddings_and_vector_search(
-            collection_name=collection_name,
-            vector_field=vector_field,
-            filename=filename,
-            data_uri=data_uri,
-            content_type=content_type,
-            limit=limit,
-            output_fields=output_fields,
-            metric_type=metric_type,
-            filter_expression=filter_expression,
-            radius=radius,
-            range_filter=range_filter
-        )
-
-        if results:
-            output = f"Vector search results for data {data_uri} from {collection_name}:\n\n"
-            for result in results:
-                output += f"{result}\n\n"
-        else:
-            output = f"No vector search result for data {data_uri} from {collection_name}"
-
-        return output
-    except Exception as e:
-        raise ToolError(
-            f"Failed to extract embedding and vector search in {collection_name} collection of {data_uri}: {str(e)}"
-        )
-
-
-@tools_mcp.tool()
-async def milvus_get_stratified_sampled_data(
+async def milvus_get_k_center_sampled_data(
         ctx: Context,
         collection_name: str,
         vector_field: str,
@@ -375,7 +356,7 @@ async def milvus_get_stratified_sampled_data(
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        return await connector.get_stratified_sampled_data(
+        return await connector.get_k_center_sampled_data(
             collection_name=collection_name,
             vector_field=vector_field,
             metric_type=metric_type,
@@ -385,5 +366,4 @@ async def milvus_get_stratified_sampled_data(
             batch_size=batch_size
         )
     except Exception as e:
-        raise ToolError(f"Failed to sample data in collection {collection_name}: {str(e)}")
-    
+        raise ToolError(f"Failed to k-center greedy sample data in collection {collection_name}: {str(e)}")

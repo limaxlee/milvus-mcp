@@ -1,13 +1,36 @@
 import pytest
 
-from common.constants import DataFields
+from common.constants import DataFields, DETECTION_COLLECTION_SUFFIX
+from milvus_mcp.schemas import SamplingResult
 from milvus_mcp.connector.connector import MilvusConnector
+
+
+def mock_data_row(pk, vector, prediction, data_uri=None, filename=None):
+    return {
+        DataFields.PK: pk,
+        DataFields.VECTOR: vector,
+        DataFields.PREDICTION: prediction,
+        DataFields.DATA_URI: data_uri if data_uri is not None else f"uri_{pk}",
+        DataFields.FILENAME: filename if filename is not None else f"file_{pk}.jpg"
+    }
+
+
+@pytest.fixture
+def stratified_sample_rows():
+    return [
+        mock_data_row(1, [1.0, 0.0], "Good"),
+        mock_data_row(2, [0.9, 0.1], "Good"),
+        mock_data_row(3, [0.0, 1.0], "Good"),
+        mock_data_row(4, [5.0, 5.0], "NG"),
+        mock_data_row(5, [5.1, 5.1], "NG")
+    ]
 
 
 class TestMilvusConnector:
     def test_client_init(self, mocker):
         mock_client = mocker.patch("milvus_mcp.connector.connector.AsyncMilvusClient")
-        connector = MilvusConnector()
+        storage = mocker.MagicMock()
+        connector = MilvusConnector(storage)
         assert connector._client is mock_client.return_value
 
     @pytest.mark.asyncio
@@ -105,7 +128,7 @@ class TestMilvusConnector:
     @pytest.mark.asyncio
     async def test_vector_search(self, mock_connector):
         results = await mock_connector.vector_search("collection_a", [1.0, 2.0], "vector")
-        assert len(results) == 5
+        assert results.search_data_count == 5
         assert mock_connector._mock_client.search.await_count == 1
 
         mock_connector._mock_client.search.side_effect = RuntimeError("Connector error")
@@ -123,72 +146,44 @@ class TestMilvusConnector:
             await mock_connector.query_collection("collection_a", "image_name == 'image.jpg'")
 
     @pytest.mark.asyncio
-    async def test_extract_embeddings_and_vector_search(self, mock_connector):
-        presigned_url = mock_connector._mock_storage.get_presigned_url.return_value
-        results = await mock_connector.extract_embeddings_and_vector_search(
-            collection_name="collection_a",
-            vector_field="vector",
-            filename="image.jpg",
-            data_uri="images/image.jpg",
-            content_type="image/jpeg"
-        )
+    async def test_get_k_center_sampled_data(self, mock_connector, stratified_sample_rows):
+        client = mock_connector._mock_client
+        client.query.return_value = stratified_sample_rows
 
-        assert len(results) == 5
-        assert all(result["entity"][DataFields.DATA_URI] == presigned_url for result in results)
+        client.has_collection.side_effect = [True, False]
+        result = await mock_connector.get_k_center_sampled_data("collection_a", {"Good": 2, "NG": 1})
 
-        mock_connector._mock_storage.retrieve_object.assert_awaited_once_with("images/image.jpg")
-        mock_connector._mock_extractor.extract_feature_vector.assert_awaited_once_with(
-            "collection_a", "image.jpg", b"image-bytes", "image/jpeg"
-        )
-        assert mock_connector._mock_client.search.await_count == 1
-        assert mock_connector._mock_storage.get_presigned_url.await_count == 5
+        assert isinstance(result, SamplingResult)
+        assert result.collection_name == "collection_a"
+        assert result.total_scanned_data == 5
+        assert result.total_sampled_data_size == 3
+        assert result.class_distribution == {"Good": 2, "NG": 1}
+        assert len(result.sampled_data_keys) == 3
+        assert set(result.sampled_data_keys) <= {1, 2, 3, 4, 5}
+        assert all(DataFields.VECTOR not in row for row in result.sampled_data.values())
 
-        # each failure below happens one stage earlier in the pipeline than the previous one
-        mock_connector._mock_storage.get_presigned_url.return_value = ""
-        with pytest.raises(ValueError, match="Failed to generate presigned URL"):
-            await mock_connector.extract_embeddings_and_vector_search(
-                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
-            )
+        predictions = [row[DataFields.PREDICTION] for row in result.sampled_data.values()]
+        assert predictions.count("Good") == 2
+        assert predictions.count("NG") == 1
 
-        mock_connector._mock_client.search.side_effect = RuntimeError("Connector error")
+        client.has_collection.side_effect = [True, True]
+        detection_result = await mock_connector.get_k_center_sampled_data("collection_a", {"Good": 2})
+        assert detection_result.collection_name == f"collection_a{DETECTION_COLLECTION_SUFFIX}"
+
+        client.has_collection.side_effect = [True, False]
+        client.query.return_value = []
+        empty_result = await mock_connector.get_k_center_sampled_data("collection_a", {"Good": 2})
+        assert empty_result.collection_name == "collection_a"
+        assert not empty_result.sampled_data_keys
+
+        client.has_collection.side_effect = None
+        client.has_collection.return_value = False
+        with pytest.raises(ValueError, match="doesn't exist"):
+            await mock_connector.get_k_center_sampled_data("missing_collection", {"Good": 2})
+
+        client.has_collection.side_effect = RuntimeError("Connector error")
         with pytest.raises(RuntimeError, match="Connector error"):
-            await mock_connector.extract_embeddings_and_vector_search(
-                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
-            )
-
-        mock_connector._mock_extractor.extract_feature_vector.return_value = []
-        with pytest.raises(ValueError, match="Failed to extract feature vector"):
-            await mock_connector.extract_embeddings_and_vector_search(
-                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
-            )
-
-        mock_connector._mock_storage.retrieve_object.return_value = None
-        with pytest.raises(ValueError, match="Failed to retrieve"):
-            await mock_connector.extract_embeddings_and_vector_search(
-                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
-            )
-
-    @pytest.mark.asyncio
-    async def test_extract_embeddings_and_vector_search_output_fields(self, mock_connector):
-        await mock_connector.extract_embeddings_and_vector_search(
-            "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
-        )
-        assert mock_connector._mock_client.search.await_args.kwargs["output_fields"] == [DataFields.DATA_URI]
-
-        output_fields = ["prediction"]
-        await mock_connector.extract_embeddings_and_vector_search(
-            "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg", output_fields=output_fields
-        )
-        assert mock_connector._mock_client.search.await_args.kwargs["output_fields"] == \
-               ["prediction", DataFields.DATA_URI]
-        assert output_fields == ["prediction"]
-
-        output_fields = ["prediction", DataFields.DATA_URI]
-        await mock_connector.extract_embeddings_and_vector_search(
-            "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg", output_fields=output_fields
-        )
-        assert mock_connector._mock_client.search.await_args.kwargs["output_fields"] == \
-               ["prediction", DataFields.DATA_URI]
+            await mock_connector.get_k_center_sampled_data("collection_a", {"Good": 2})
 
     @pytest.mark.asyncio
     async def test_close(self, mock_connector):
@@ -198,4 +193,3 @@ class TestMilvusConnector:
         mock_connector._mock_client.close.side_effect = RuntimeError("Connector error")
         with pytest.raises(RuntimeError, match="Connector error"):
             await mock_connector.close()
-            

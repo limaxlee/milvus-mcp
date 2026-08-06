@@ -7,7 +7,7 @@ from starlette.middleware.cors import CORSMiddleware
 from common.config import SETTINGS
 from milvus_mcp.connector import MilvusContext, MilvusConnector
 from milvus_mcp.middleware import LoggingMiddleware
-from milvus_mcp.storage import ObjectStorageClient
+from milvus_mcp.storage import ObjectStorage
 from milvus_mcp.routes import custom_mcp
 from milvus_mcp.tools import tools_mcp
 from milvus_mcp.utils import initialize_logger
@@ -15,15 +15,15 @@ from milvus_mcp.utils import initialize_logger
 
 @asynccontextmanager
 async def lifespan(mcp: FastMCP) -> AsyncIterator[MilvusContext]:
-    storage_client = ObjectStorageClient()
-    await storage_client.connect()
+    storage = ObjectStorage()
+    await storage.connect()
 
-    connector = MilvusConnector()
+    connector = MilvusConnector(storage)
     try:
         yield MilvusContext(connector)
     finally:
         await connector.close()
-        await storage_client.close()
+        await storage.close()
 
 
 mcp = FastMCP(name="Milvus MCP Server", lifespan=lifespan)

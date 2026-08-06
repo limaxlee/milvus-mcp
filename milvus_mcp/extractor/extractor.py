@@ -7,9 +7,10 @@ from common.constants import FEATURE_EXTRACTION_TIMEOUT
 logger = logging.getLogger(__name__)
 
 
+# FIXME: Replace with the real API Endpoint to extract the feature vector
 class FeatureExtractor:
     def __init__(self):
-        self._extractor_url = f"http://{SETTINGS.feature_extractor.host}:{SETTINGS.feature_extractor.port}/embeddings"
+        self._url = f"http://{SETTINGS.feature_extractor.host}:{SETTINGS.feature_extractor.port}/feature-vector"
 
     async def extract_feature_vector(
             self,
@@ -21,7 +22,7 @@ class FeatureExtractor:
         try:
             async with AsyncClient(timeout=FEATURE_EXTRACTION_TIMEOUT) as client:
                 response = await client.post(
-                    self._extractor_url,
+                    self._url,
                     data={"ai_model": ai_model},
                     files={"file": (filename, object_bytes, content_type)}
                 )
@@ -35,4 +36,4 @@ class FeatureExtractor:
             raise
         except Exception as e:
             logger.exception(f"Failed to extract embeddings of data {filename}: {str(e)}")
-            raise 
+            raise

@@ -6,13 +6,11 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from common.config import SETTINGS
 from common.constants import PRESIGNED_URL_EXPIRED_IN
-from milvus_mcp.utils import singleton
 
 logger = logging.getLogger(__name__)
 
 
-@singleton
-class ObjectStorageClient:
+class ObjectStorage:
     def __init__(self):
         self._client = None
         self._session = get_session()

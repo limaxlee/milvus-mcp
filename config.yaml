@@ -1,9 +1,10 @@
 server_port: 8443
-milvus_host: 10.240.35.173
-milvus_port: 19530
-milvus_user: ""
-milvus_password: ""
-milvus_db_name: cosmoData
+milvus:
+  host: 10.240.35.173
+  port: 19530
+  user: ""
+  password: ""
+  db_name: cosmoData
 
 object_storage:
   bucket: cosmo-storage-develop
@@ -14,4 +15,4 @@ object_storage:
 feature_extractor:
   host: localhost
   port: 6789
-  
+

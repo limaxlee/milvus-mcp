@@ -1,24 +1,27 @@
 import logging
-import numpy as np
 from typing import Any
 from collections import Counter
 from pymilvus import AsyncMilvusClient, DataType
 
 from common.config import SETTINGS
-from common.constants import DIMENSION, METRIC_TYPE, LIMIT, BATCH_SIZE, DataFields, DETECTION_COLLECTION_SUFFIX, MetricTypes
-from milvus_mcp.storage import ObjectStorageClient
+from common.constants import (
+    DIMENSION, METRIC_TYPE, LIMIT, BATCH_SIZE, DETECTION_COLLECTION_SUFFIX,
+    DataFields, SamplingMethods
+)
 from milvus_mcp.extractor import FeatureExtractor
-from milvus_mcp.schemas import SamplingResult
+from milvus_mcp.storage import ObjectStorage
+from milvus_mcp.sampling import sample_data
+from milvus_mcp.schemas import SamplingResult, VectorSearchResult
 
 logger = logging.getLogger(__name__)
 
 
 class MilvusConnector:
-    def __init__(self):
-        self._uri = f"http://{SETTINGS.milvus_host}:{SETTINGS.milvus_port}"
-        self._token = f"{SETTINGS.milvus_user}:{SETTINGS.milvus_password}"
-        self._client = AsyncMilvusClient(uri=self._uri, token=self._token, db_name=SETTINGS.milvus_db_name)
-        self._storage = ObjectStorageClient()
+    def __init__(self, storage: ObjectStorage):
+        self._uri = f"http://{SETTINGS.milvus.host}:{SETTINGS.milvus.port}"
+        self._token = f"{SETTINGS.milvus.user}:{SETTINGS.milvus.password}"
+        self._client = AsyncMilvusClient(uri=self._uri, token=self._token, db_name=SETTINGS.milvus.db_name)
+        self._storage = storage
         self._extractor = FeatureExtractor()
 
     async def list_databases(self) -> list[str]:
@@ -44,19 +47,16 @@ class MilvusConnector:
     async def get_collection_info(self, collection_name: str) -> dict:
         try:
             result = await self._client.describe_collection(collection_name)
-            result["classes"] = await self._get_class_distribution(collection_name)
+            data_rows = await self._scan_data(collection_name, [])
+            counter = Counter(row.get(DataFields.PREDICTION) for row in data_rows)
+
+            result["classes"] = {str(value): count for value, count in counter.most_common()}
             logger.info(f"Retrieved {collection_name} collection info: {result}")
 
             return result
         except Exception as e:
             logger.exception(f"Failed to get {collection_name} collection info: {str(e)}")
             raise
-
-    async def _get_class_distribution(self, collection_name: str) -> dict[str, int]:
-        data_rows = await self._scan_data(collection_name, [], vector_field=None)
-        counter = Counter(row.get(DataFields.PREDICTION) for row in data_rows)
-
-        return {str(value): count for value, count in counter.most_common()}
 
     async def get_collection_stats(self, collection_name: str) -> dict[str, Any]:
         try:
@@ -158,7 +158,7 @@ class MilvusConnector:
             filter_expression: str | None = None,
             radius: float | None = None,
             range_filter: float | None = None
-    ) -> list[dict]:
+    ) -> VectorSearchResult:
         try:
             search_params = {"metric_type": metric_type, "params": {"nprobe": 10}}
             if radius is not None:
@@ -166,7 +166,7 @@ class MilvusConnector:
             if range_filter is not None:
                 search_params["params"]["range_filter"] = range_filter
 
-            results = await self._client.search(
+            search_results = await self._client.search(
                 collection_name=collection_name,
                 data=[vector],
                 anns_field=vector_field,
@@ -176,27 +176,15 @@ class MilvusConnector:
                 filter=filter_expression
             )
 
-            return results[0]
-        except Exception as e:
-            logger.exception(f"Failed to vector search in {collection_name} collection using {vector[:3]}: {str(e)}")
-            raise
-
-    async def query_collection(
-            self,
-            collection_name: str,
-            filter_expression: str,
-            output_fields: list[str] | None = None,
-            limit: int = LIMIT
-    ) -> list[dict]:
-        try:
-            return await self._client.query(
+            return VectorSearchResult(
                 collection_name=collection_name,
-                filter=filter_expression,
-                output_fields=output_fields,
-                limit=limit
+                search_data_count=len(search_results[0]),
+                search_data_keys=[item["id"] for item in search_results[0]],
+                search_data_distance=[item["distance"] for item in search_results[0]],
+                search_data={item["id"]: item["entity"] for item in search_results[0]}
             )
         except Exception as e:
-            logger.exception(f"Failed to query from {collection_name} collection using {filter_expression}: {str(e)}")
+            logger.exception(f"Failed to vector search in {collection_name} collection using {vector[:3]}: {str(e)}")
             raise
 
     async def extract_embeddings_and_vector_search(
@@ -212,12 +200,11 @@ class MilvusConnector:
             filter_expression: str | None = None,
             radius: float | None = None,
             range_filter: float | None = None
-    ) -> list[dict]:
+    ) -> VectorSearchResult:
         try:
-            if not output_fields:
-                output_fields = [DataFields.DATA_URI]
-            elif DataFields.DATA_URI not in output_fields:
-                output_fields = [*output_fields, DataFields.DATA_URI]
+            output_fields = list(
+                set((output_fields or []) + [DataFields.DATA_URI, DataFields.FILENAME, DataFields.PREDICTION])
+            )
 
             image_bytes = await self._storage.retrieve_object(data_uri)
             if not image_bytes:
@@ -227,7 +214,7 @@ class MilvusConnector:
             if not vector:
                 raise ValueError(f"Failed to extract feature vector from {data_uri} object")
 
-            results = await self.vector_search(
+            result = await self.vector_search(
                 collection_name=collection_name,
                 vector=vector,
                 vector_field=vector_field,
@@ -239,15 +226,11 @@ class MilvusConnector:
                 range_filter=range_filter
             )
 
-            for r in results:
-                presigned_url = await self._storage.get_presigned_url(r["entity"][DataFields.DATA_URI])
-                if not presigned_url:
-                    raise ValueError(f"Failed to generate presigned URL for {r['entity'][DataFields.DATA_URI]}")
-
-                r["entity"][DataFields.DATA_URI] = presigned_url
+            for key, item in result.search_data.items():
+                item[DataFields.DATA_URI] = await self._storage.get_presigned_url(item[DataFields.DATA_URI])
 
             logger.info(f"Extracted embedding and did vector search of data {data_uri} in {collection_name} collection")
-            return results
+            return result
         except Exception as e:
             logger.exception(f"Failed to extract embedding and vector search in collection {collection_name}: {str(e)}")
             raise
@@ -256,14 +239,14 @@ class MilvusConnector:
             self,
             collection_name: str,
             output_fields: list[str],
-            vector_field: str | None = DataFields.VECTOR,
+            vector_field: str | None = None,
             batch_size: int = BATCH_SIZE
     ) -> list[dict[str, Any]]:
-        requested_fields = [DataFields.PK, DataFields.PREDICTION, *output_fields]
-        if vector_field is not None:
-            requested_fields.insert(1, vector_field)
+        fields = [DataFields.PK, DataFields.PREDICTION, *output_fields]
+        if vector_field:
+            fields.append(vector_field)
+        fields = list(dict.fromkeys(fields))
 
-        fields = list(dict.fromkeys(requested_fields))
         data_rows = []
         seen_data = set()
         cursor = None
@@ -296,7 +279,25 @@ class MilvusConnector:
 
         return data_rows
 
-    async def get_stratified_sampled_data(
+    async def query_collection(
+            self,
+            collection_name: str,
+            filter_expression: str,
+            output_fields: list[str] | None = None,
+            limit: int = LIMIT
+    ) -> list[dict]:
+        try:
+            return await self._client.query(
+                collection_name=collection_name,
+                filter=filter_expression,
+                output_fields=output_fields,
+                limit=limit
+            )
+        except Exception as e:
+            logger.exception(f"Failed to query from {collection_name} collection using {filter_expression}: {str(e)}")
+            raise
+
+    async def get_k_center_sampled_data(
             self,
             collection_name: str,
             sample_classes: dict[str, int],
@@ -312,97 +313,26 @@ class MilvusConnector:
             if await self._client.has_collection(f"{collection_name}{DETECTION_COLLECTION_SUFFIX}"):
                 collection_name += DETECTION_COLLECTION_SUFFIX
 
-            if any(sample_cap <= 0 for sample_cap in sample_classes.values()):
-                raise ValueError(f"Sample cap for classes {sample_classes} must be positive")
-            if keep_classes and set(keep_classes) & sample_classes.keys():
-                raise ValueError(f"Overlapping classes in keep {keep_classes} and sample {sample_classes} classes")
-
             output_fields = list(set((output_fields or []) + [DataFields.DATA_URI, DataFields.FILENAME]))
             data_rows = await self._scan_data(collection_name, output_fields, vector_field, batch_size)
             if not data_rows:
                 return SamplingResult(collection_name=collection_name)
 
-            pk = [item[DataFields.PK] for item in data_rows]
-            classes = [item.get(DataFields.PREDICTION) for item in data_rows]
-            class_counts = Counter(classes)
-            vectors = np.asarray([item[vector_field] for item in data_rows], dtype=np.float32)
-
-            if sample_classes.keys() - class_counts.keys():
-                raise ValueError(f"Sample classes {sample_classes} are not present in {collection_name} collection")
-            if keep_classes and set(keep_classes) - class_counts.keys():
-                raise ValueError(f"Keep classes {keep_classes} are not present in {collection_name} collection")
-
-            class_caps = {class_name: class_counts[class_name] for class_name in keep_classes} if keep_classes else {}
-            for class_name, sample_cap in sample_classes.items():
-                class_caps[class_name] = min(sample_cap, class_counts[class_name])
-
-            sampled_data = self._stratified_sample(vectors, classes, class_caps, metric_type)
-            sampled_data_pk = [pk[item] for item in sampled_data]
-            result = SamplingResult(
+            result = sample_data(
+                method=SamplingMethods.K_CENTER_GREEDY,
                 collection_name=collection_name,
+                data_rows=data_rows,
+                sample_classes=sample_classes,
+                keep_classes=keep_classes,
                 vector_field=vector_field,
-                total_scanned_data=len(data_rows),
-                total_sampled_data_size=sum(class_caps.values()),
-                class_distribution=class_caps,
-                sampled_data_keys=sampled_data_pk,
-                sampled_data={item[DataFields.PK]: item for item in data_rows if item[DataFields.PK] in sampled_data_pk}
+                metric_type=metric_type
             )
 
-            logger.info(f"Sampled {len(sampled_data)} data in {collection_name} collection")
+            logger.info(f"K-center greedy sampled {len(result.sampled_data_keys)} data in {collection_name} collection")
             return result
         except Exception as e:
-            logger.exception(f"Failed to sample data in {collection_name} collection: {str(e)}")
+            logger.exception(f"Failed to k-center greedy sample  data in {collection_name} collection: {str(e)}")
             raise
-
-    def _stratified_sample(
-            self,
-            vectors: np.ndarray,
-            classes: list[str],
-            class_caps: dict[str, int],
-            metric_type: str = METRIC_TYPE
-    ) -> list[int]:
-        np_classes = np.array(classes)
-        sampled_data = []
-
-        for class_name, class_cap in class_caps.items():
-            class_data_idx = np.where(np_classes == class_name)[0]
-            local = self._k_center_greedy_sample(vectors[class_data_idx], class_cap, metric_type)
-            chosen = [int(class_data_idx[i]) for i in local]
-
-            sampled_data.extend(chosen)
-
-        return sampled_data
-
-    @staticmethod
-    def _k_center_greedy_sample(vectors: np.ndarray, sample_size: int, metric_type: str = METRIC_TYPE) -> list[int]:
-        feature_vectors = vectors.astype(np.float32, copy=True)
-
-        if metric_type == MetricTypes.COSINE:
-            normalized_vectors = np.linalg.norm(feature_vectors, axis=1, keepdims=True)
-            normalized_vectors[normalized_vectors == 0.0] = 1.0
-            feature_vectors /= normalized_vectors
-
-        def distance_to_center(center: np.ndarray) -> np.ndarray:
-            if metric_type == MetricTypes.COSINE:
-                return -(feature_vectors @ center)
-            diff = feature_vectors - center
-            return np.einsum("ij,ij->i", diff, diff)
-
-        start_data = int(np.argmin(distance_to_center(feature_vectors.mean(axis=0))))
-        selected_data = [start_data]
-        min_distance = distance_to_center(feature_vectors[start_data])
-        min_distance[start_data] = -np.inf
-
-        for _ in range(sample_size - 1):
-            idx = int(np.argmax(min_distance))
-            if not np.isfinite(min_distance[idx]):
-                break
-
-            selected_data.append(idx)
-            min_distance = np.minimum(min_distance, distance_to_center(feature_vectors[idx]))
-            min_distance[idx] = -np.inf
-
-        return selected_data
 
     async def close(self):
         try:

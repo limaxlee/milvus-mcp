@@ -1,35 +1,40 @@
 import os
 import yaml
 import argparse
+from typing import Any
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 
 from common.constants import ROOT_DIR
 
 _ENV_MAP = {
-    "server_port": ("SERVER_PORT", int),
-    "milvus_host": ("MILVUS_HOST", str),
-    "milvus_port": ("MILVUS_PORT", int),
-    "milvus_user": ("MILVUS_USER", str),
-    "milvus_password": ("MILVUS_PASSWORD", str),
-    "milvus_db_name": ("MILVUS_DB_NAME", str),
+    "SERVER_PORT": ("server_port", int),
+    "MILVUS_HOST": ("milvus.host", str),
+    "MILVUS_PORT": ("milvus.port", int),
+    "MILVUS_USER": ("milvus.user", str),
+    "MILVUS_PASSWORD": ("milvus.password", str),
+    "MILVUS_DB_NAME": ("milvus.db_name", str),
+    "FEATURE_EXTRACTOR_HOST": ("feature_extractor.host", str),
+    "FEATURE_EXTRACTOR_PORT": ("feature_extractor.port", int),
     "OBJECT_STORAGE_BUCKET": ("object_storage.bucket", str),
     "OBJECT_STORAGE_ENDPOINT": ("object_storage.endpoint", str),
     "OBJECT_STORAGE_ACCESS_KEY": ("object_storage.access_key", str),
-    "OBJECT_STORAGE_SECRET_KEY": ("object_storage.secret_key", str),
-    "FEATURE_EXTRACTOR_HOST": ("feature_extractor.host", str),
-    "FEATURE_EXTRACTOR_PORT": ("feature_extractor.port", str)
+    "OBJECT_STORAGE_SECRET_KEY": ("object_storage.secret_key", str)
 }
 
-_REQUIRED_KEYS = (
-    "server_port", "milvus_host", "milvus_port",
-    "object_storage.bucket", "object_storage.endpoint",
-    "object_storage.access_key", "object_storage.secret_key",
-    "feature_extractor.host", "feature_extractor.port"
-)
+
+def _set_nested_config(config: dict[str, Any], key: str, value: Any) -> None:
+    *groups, values = key.split(".")
+    node = config
+    for group in groups:
+        node = node.setdefault(group, {})
+        if not isinstance(node, dict):
+            raise ValueError(f"Config key {group} is invalid: {type(node).__name__}")
+
+    node[values] = value
 
 
-def load_config() -> dict:
+def load_config() -> dict[str, Any]:
     default_config = os.path.join(ROOT_DIR, "config.yaml")
     parser = argparse.ArgumentParser(description="Milvus MCP Server Configurations")
     parser.add_argument("--config", "-c", type=str, help="Path to the config.yaml", default=default_config)
@@ -38,32 +43,24 @@ def load_config() -> dict:
     config = {}
     if os.path.isfile(args.config):
         with open(args.config, "r") as f:
-            config.update(yaml.safe_load(f))
+            file_config = yaml.safe_load(f) or {}
+
+        if not isinstance(file_config, dict):
+            raise ValueError(f"Config file is invalid: {args.config}")
+
+        config.update(file_config)
 
     for env_name, (key, caster) in _ENV_MAP.items():
         env_value = os.getenv(env_name)
         if env_value is None:
             continue
 
-        if "." in key:
-            group, sub_key = key.split(".")
-            config.setdefault(group, {})[sub_key] = caster(env_value)
-        if env_value is not None:
-            config[key] = caster(env_value)
+        try:
+            value = caster(env_value)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Invalid value for {env_name}: {env_value!r}") from error
 
-    missing_config = []
-    for key in _REQUIRED_KEYS:
-        if "." in key:
-            group, sub_key = key.split(".")
-            value = config.get(group, {}).get(sub_key)
-        else:
-            value = config.get(key)
-
-        if value in (None, ""):
-            missing_config.append(key)
-
-    if missing_config:
-        raise ValueError(f"Missing required configuration: {missing_config}")
+        _set_nested_config(config, key, value)
 
     return config
 
@@ -80,14 +77,17 @@ class FeatureExtractorConfig(BaseModel):
     port: int
 
 
+class MilvusDBConfig(BaseModel):
+    host: str = "localhost"
+    port: int = 19530
+    user: str = ""
+    password: str = ""
+    db_name: str = "default"
+
+
 class Settings(BaseSettings, extra="allow"):
     server_port: int
-    milvus_host: str = "localhost"
-    milvus_port: int = 19530
-    milvus_user: str = ""
-    milvus_password: str = ""
-    milvus_db_name: str = "default"
-
+    milvus: MilvusDBConfig
     object_storage: ObjectStorageConfig
     feature_extractor: FeatureExtractorConfig
 

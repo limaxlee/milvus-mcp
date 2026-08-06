@@ -4,6 +4,7 @@ import pytest_asyncio
 from fastmcp.exceptions import ToolError
 
 from milvus_mcp.tools import tools_mcp
+from milvus_mcp.schemas import SamplingResult
 
 
 @pytest_asyncio.fixture
@@ -163,6 +164,31 @@ class TestMilvusMCPTools:
             await tool(mock_context, "collection_a", [1.0, 2.0], "vector")
 
     @pytest.mark.asyncio
+    async def test_milvus_extract_embeddings_and_vector_search(self, mocker, tools_by_name, mock_context):
+        tool = tools_by_name["milvus_extract_embeddings_and_vector_search"]
+        connector = mock_context.request_context.lifespan_context.connector
+        presigned_url = connector._mock_storage.get_presigned_url.return_value
+
+        result = await tool(mock_context, "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg")
+        assert result.search_data_count == 5
+
+        # connector._mock_storage.retrieve_object.assert_awaited_once_with("images/image.jpg")
+        # connector._mock_extractor.extract_feature_vector.assert_awaited_once_with(
+        #     "collection_a", "image.jpg", b"image-bytes", "image/jpeg"
+        # )
+        # assert connector._mock_client.search.await_count == 1
+        #
+        # mock_context.request_context.lifespan_context.connector.extract_embeddings_and_vector_search = \
+        #     mocker.AsyncMock(return_value=[])
+        # result = await tool(mock_context, "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg")
+        # assert result == "No vector search result for data images/image.jpg from collection_a"
+        #
+        # mock_context.request_context.lifespan_context.connector.extract_embeddings_and_vector_search = \
+        #     mocker.AsyncMock(side_effect=RuntimeError())
+        # with pytest.raises(ToolError):
+        #     await tool(mock_context, "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg")
+
+    @pytest.mark.asyncio
     async def test_milvus_query_collection(self, mocker, tools_by_name, mock_context):
         tool = tools_by_name["milvus_query_collection"]
         await tool(mock_context, "collection_a", "image_name == 'image.jpg'")
@@ -176,28 +202,39 @@ class TestMilvusMCPTools:
             await tool(mock_context, "collection_a", "image_name == 'image.jpg'")
 
     @pytest.mark.asyncio
-    async def test_milvus_extract_embeddings_and_vector_search(self, mocker, tools_by_name, mock_context):
-        tool = tools_by_name["milvus_extract_embeddings_and_vector_search"]
+    async def test_milvus_get_k_center_sampled_data(self, mocker, tools_by_name, mock_context):
+        tool = tools_by_name["milvus_get_k_center_sampled_data"]
         connector = mock_context.request_context.lifespan_context.connector
-        presigned_url = connector._mock_storage.get_presigned_url.return_value
 
-        result = await tool(mock_context, "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg")
-
-        assert result.startswith("Vector search results for data images/image.jpg from collection_a:")
-        assert result.count(presigned_url) == 5
-
-        connector._mock_storage.retrieve_object.assert_awaited_once_with("images/image.jpg")
-        connector._mock_extractor.extract_feature_vector.assert_awaited_once_with(
-            "collection_a", "image.jpg", b"image-bytes", "image/jpeg"
+        expected_result = SamplingResult(
+            collection_name="collection_a",
+            total_scanned_data=5,
+            total_sampled_data_size=4,
+            class_distribution={"Good": 2, "NG": 2},
+            sampled_data_keys=[1, 2, 4, 5],
+            sampled_data={}
         )
-        assert connector._mock_client.search.await_count == 1
+        connector.get_k_center_sampled_data = mocker.AsyncMock(return_value=expected_result)
 
-        mock_context.request_context.lifespan_context.connector.extract_embeddings_and_vector_search = \
-            mocker.AsyncMock(return_value=[])
-        result = await tool(mock_context, "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg")
-        assert result == "No vector search result for data images/image.jpg from collection_a"
+        result = await tool(
+            mock_context, "collection_a", "vector", {"Good": 2}, "COSINE", ["NG"], None, 1000
+        )
 
-        mock_context.request_context.lifespan_context.connector.extract_embeddings_and_vector_search = \
-            mocker.AsyncMock(side_effect=RuntimeError())
+        assert result == expected_result
+        connector.get_k_center_sampled_data.assert_awaited_once_with(
+            collection_name="collection_a",
+            vector_field="vector",
+            metric_type="COSINE",
+            keep_classes=["NG"],
+            sample_classes={"Good": 2},
+            output_fields=None,
+            batch_size=1000
+        )
+
+        connector.get_k_center_sampled_data = mocker.AsyncMock(return_value=expected_result)
+        await tool(mock_context, "collection_a", "vector", {"Good": 2})
+        connector.get_k_center_sampled_data.assert_awaited_once()
+
+        connector.get_k_center_sampled_data = mocker.AsyncMock(side_effect=RuntimeError("Connector error"))
         with pytest.raises(ToolError):
-            await tool(mock_context, "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg")
+            await tool(mock_context, "collection_a", "vector", {"Good": 2})

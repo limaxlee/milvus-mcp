@@ -7,5 +7,5 @@ class SamplingResult(BaseModel):
     total_scanned_data: int = 0
     total_sampled_data_size: int = 0
     class_distribution: dict[str, int] = {}
-    sampled_data_keys: list[int] = []
+    sampled_data_keys: list[Any] = []
     sampled_data: dict[int, Any] = {}

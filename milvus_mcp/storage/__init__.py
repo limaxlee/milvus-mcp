@@ -1,1 +1,1 @@
-from .object_storage_client import ObjectStorageClient
+from .object_storage import ObjectStorage

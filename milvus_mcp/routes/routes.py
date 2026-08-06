@@ -20,7 +20,7 @@ custom_mcp = FastMCP(name="custom_route")
 async def check_health(request: Request) -> JSONResponse:
     try:
         health_status = {"MCP Server status": "healthy"}
-        health_check_uri = f"http://{SETTINGS.milvus_host}:{HEALTH_CHECK_PORT}/healthz"
+        health_check_uri = f"http://{SETTINGS.milvus.host}:{HEALTH_CHECK_PORT}/healthz"
         async with AsyncClient(timeout=HEALTH_CHECK_TIMEOUT) as client:
             response = await client.get(health_check_uri)
             health_status["DB status"] = "healthy" if response.status_code == status.HTTP_200_OK else "unhealthy"

@@ -3,13 +3,12 @@ from contextlib import AsyncExitStack
 from botocore.exceptions import ClientError
 
 from common.constants import PRESIGNED_URL_EXPIRED_IN
-from milvus_mcp.storage import ObjectStorageClient
+from milvus_mcp.storage import ObjectStorage
 
 
 @pytest.fixture
 def storage_client(mocker):
-    # ObjectStorageClient is a singleton, so the shared instance is reset around every test
-    client = ObjectStorageClient()
+    client = ObjectStorage()
     original_state = (client._session, client._exit_stack, client._client)
 
     client._session = mocker.MagicMock(name="AioSession")
@@ -33,9 +32,6 @@ def mock_s3_client(mocker, storage_client):
 
 
 class TestObjectStorage:
-    def test_client_is_singleton(self):
-        assert ObjectStorageClient() is ObjectStorageClient()
-
     @pytest.mark.asyncio
     async def test_connect(self, storage_client, mock_s3_client):
         result = await storage_client.connect()
@@ -44,7 +40,6 @@ class TestObjectStorage:
         assert storage_client._client is mock_s3_client
         assert storage_client._session.create_client.call_count == 1
 
-        # already connected, so the session is not asked for a second client
         await storage_client.connect()
         assert storage_client._session.create_client.call_count == 1
 
@@ -100,22 +95,20 @@ class TestObjectStorage:
     @pytest.mark.asyncio
     async def test_get_presigned_url(self, mocker, storage_client, mock_s3_client):
         await storage_client.connect()
-        mock_s3_client.generate_presigned_url = mocker.AsyncMock(
-            return_value="https://storage.local/presigned/image.jpg"
-        )
+        mock_s3_client.generate_presigned_url = mocker.AsyncMock(return_value="https:///presigned/image.jpg")
 
         url = await storage_client.get_presigned_url("images/image.jpg")
-        assert url == "https://storage.local/presigned/image.jpg"
+        assert url == "https:///presigned/image.jpg"
         mock_s3_client.generate_presigned_url.assert_awaited_once_with(
             ClientMethod="get_object",
             Params={"Bucket": storage_client._bucket, "Key": "images/image.jpg"},
             ExpiresIn=PRESIGNED_URL_EXPIRED_IN
         )
 
-        await storage_client.get_presigned_url("images/image.jpg", bucket="other-bucket", expires_in=60)
+        await storage_client.get_presigned_url("images/image.jpg", bucket="stage-bucket", expires_in=60)
         call_kwargs = mock_s3_client.generate_presigned_url.await_args.kwargs
-        assert call_kwargs["Params"]["Bucket"] == "other-bucket"
+        assert call_kwargs["Params"]["Bucket"] == "stage-bucket"
         assert call_kwargs["ExpiresIn"] == 60
 
-        mock_s3_client.generate_presigned_url.side_effect = RuntimeError("Storage error")
+        mock_s3_client.generate_presigned_url.side_effect = RuntimeError("Storage Error")
         assert await storage_client.get_presigned_url("images/image.jpg") == ""
