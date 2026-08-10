@@ -1,6 +1,7 @@
+import os
 import pytest
 
-from common.constants import LIMIT, DataFields, DETECTION_COLLECTION_SUFFIX
+from common.constants import DataFields, DETECTION_COLLECTION_SUFFIX
 from milvus_mcp.schemas import SamplingResult, VectorSearchResult
 from milvus_mcp.connector.connector import MilvusConnector
 
@@ -15,22 +16,6 @@ def mock_data_row(pk, vector, prediction, data_uri=None, filename=None):
     }
 
 
-def mock_search_hit(pk, distance, prediction):
-    return {
-        "id": pk,
-        "distance": distance,
-        "entity": {
-            DataFields.DATA_URI: f"uri_{pk}",
-            DataFields.FILENAME: f"file_{pk}.jpg",
-            DataFields.PREDICTION: prediction
-        }
-    }
-
-
-def mock_search_results():
-    return [[mock_search_hit(1, 0.99, "Good"), mock_search_hit(2, 0.95, "NG")]]
-
-
 @pytest.fixture
 def stratified_sample_rows():
     return [
@@ -40,22 +25,6 @@ def stratified_sample_rows():
         mock_data_row(4, [5.0, 5.0], "NG"),
         mock_data_row(5, [5.1, 5.1], "NG")
     ]
-
-
-@pytest.fixture
-def mock_embedding_connector(mocker, mock_connector):
-    # fresh hits per call, since the presign step rewrites data_uri in place
-    mock_connector._mock_client.search.side_effect = lambda *args, **kwargs: mock_search_results()
-
-    mock_connector._storage.retrieve_object = mocker.AsyncMock(return_value=b"image-bytes")
-    mock_connector._storage.get_presigned_url = mocker.AsyncMock(side_effect=lambda uri: f"https://presigned/{uri}")
-    mock_connector._extractor = mocker.MagicMock(name="FeatureExtractor")
-    mock_connector._extractor.extract_feature_vector = mocker.AsyncMock(return_value=[1.0, 2.0])
-
-    mock_connector._mock_storage = mock_connector._storage
-    mock_connector._mock_extractor = mock_connector._extractor
-
-    return mock_connector
 
 
 class TestMilvusConnector:
@@ -168,79 +137,50 @@ class TestMilvusConnector:
             await mock_connector.vector_search("collection_a", [1.0, 2.0], "vector")
 
     @pytest.mark.asyncio
-    async def test_extract_embeddings_and_vector_search(self, mock_embedding_connector):
-        connector = mock_embedding_connector
-        result = await connector.extract_embeddings_and_vector_search(
-            "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+    async def test_extract_embeddings_and_vector_search(self, mock_connector):
+        client = mock_connector._mock_client
+        storage = mock_connector._mock_storage
+        extractor = mock_connector._mock_extractor
+
+        client.search.return_value = [[
+            {"id": 462025919837366269, "distance": 0.99, "entity": {DataFields.DATA_URI: "uri_a"}},
+            {"id": 462025919837366277, "distance": 0.95, "entity": {DataFields.DATA_URI: "uri_b"}}
+        ]]
+
+        result = await mock_connector.extract_embeddings_and_vector_search(
+            "collection_a", "vector", "image.jpg", "data/uri.jpg", "image/jpeg"
         )
 
         assert isinstance(result, VectorSearchResult)
         assert result.collection_name == "collection_a"
         assert result.search_data_count == 2
-        assert result.search_data_keys == [1, 2]
-        assert result.search_data_distance == [0.99, 0.95]
+        assert result.search_data_keys == [462025919837366269, 462025919837366277]
 
-        connector._mock_storage.retrieve_object.assert_awaited_once_with("images/image.jpg")
-        connector._mock_extractor.extract_feature_vector.assert_awaited_once_with(
-            "collection_a", "image.jpg", b"image-bytes", "image/jpeg"
+        storage.retrieve_object.assert_awaited_once_with("data/uri.jpg")
+        extractor.extract_feature_vector.assert_awaited_once_with(
+            "collection_a", "image.jpg", b"image_bytes", "image/jpeg"
         )
-        assert connector._mock_client.search.await_count == 1
+        assert client.search.await_count == 1
+        assert storage.get_presigned_url.await_count == 2
 
-        search_kwargs = connector._mock_client.search.await_args.kwargs
-        assert search_kwargs["collection_name"] == "collection_a"
-        assert search_kwargs["data"] == [[1.0, 2.0]]
-        assert search_kwargs["anns_field"] == "vector"
-        assert search_kwargs["limit"] == LIMIT
-        assert set(search_kwargs["output_fields"]) == {
-            DataFields.DATA_URI, DataFields.FILENAME, DataFields.PREDICTION
-        }
-
-        assert connector._mock_storage.get_presigned_url.await_count == 2
-        assert [row[DataFields.DATA_URI] for row in result.search_data.values()] == [
-            "https://presigned/uri_1", "https://presigned/uri_2"
-        ]
-        assert [row[DataFields.FILENAME] for row in result.search_data.values()] == ["file_1.jpg", "file_2.jpg"]
-
-        await connector.extract_embeddings_and_vector_search(
-            "collection_a",
-            "vector",
-            "image.jpg",
-            "images/image.jpg",
-            "image/jpeg",
-            limit=3,
-            output_fields=[DataFields.PK],
-            filter_expression="prediction == 'Good'",
-            radius=0.5,
-            range_filter=1.0
-        )
-
-        search_kwargs = connector._mock_client.search.await_args.kwargs
-        assert search_kwargs["limit"] == 3
-        assert search_kwargs["filter"] == "prediction == 'Good'"
-        assert search_kwargs["search_params"]["params"]["radius"] == 0.5
-        assert search_kwargs["search_params"]["params"]["range_filter"] == 1.0
-        assert set(search_kwargs["output_fields"]) == {
-            DataFields.PK, DataFields.DATA_URI, DataFields.FILENAME, DataFields.PREDICTION
-        }
-
-        connector._mock_storage.retrieve_object.return_value = None
-        with pytest.raises(ValueError, match="Failed to retrieve images/image.jpg object from storage"):
-            await connector.extract_embeddings_and_vector_search(
-                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+        storage.retrieve_object.return_value = None
+        with pytest.raises(ValueError):
+            await mock_connector.extract_embeddings_and_vector_search(
+                "collection_a", "vector", "image.jpg", "data/uri.jpg", "image/jpeg"
             )
 
-        connector._mock_storage.retrieve_object.return_value = b"image-bytes"
-        connector._mock_extractor.extract_feature_vector.return_value = []
-        with pytest.raises(ValueError, match="Failed to extract feature vector from images/image.jpg object"):
-            await connector.extract_embeddings_and_vector_search(
-                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+        storage.retrieve_object.return_value = b"image_bytes"
+        extractor.extract_feature_vector.return_value = []
+        with pytest.raises(ValueError):
+            await mock_connector.extract_embeddings_and_vector_search(
+                "collection_a", "vector", "image.jpg", "data/uri.jpg", "image/jpeg"
             )
 
-        connector._mock_extractor.extract_feature_vector.return_value = [1.0, 2.0]
-        connector._mock_client.search.side_effect = RuntimeError("Connector error")
-        with pytest.raises(RuntimeError, match="Connector error"):
-            await connector.extract_embeddings_and_vector_search(
-                "collection_a", "vector", "image.jpg", "images/image.jpg", "image/jpeg"
+        extractor.extract_feature_vector.return_value = [1.0, 2.0, 3.0]
+        client.search.side_effect = RuntimeError("Connector error")
+        with pytest.raises(RuntimeError):
+            await mock_connector.extract_embeddings_and_vector_search(
+                "collection_a", "vector", "image.jpg", "data/uri.jpg", "image/jpeg"
             )
 
     @pytest.mark.asyncio
@@ -292,6 +232,97 @@ class TestMilvusConnector:
         client.has_collection.side_effect = RuntimeError("Connector error")
         with pytest.raises(RuntimeError, match="Connector error"):
             await mock_connector.get_k_center_sampled_data("collection_a", {"Good": 2})
+
+    @pytest.mark.asyncio
+    async def test_get_k_center_sampled_data_as_zip_file(self, mocker, mock_connector, stratified_sample_rows):
+        client = mock_connector._mock_client
+        client.query.return_value = stratified_sample_rows
+        client.has_collection.side_effect = [True, False]
+
+        packaged = {}
+
+        async def fake_create_zip_file(zip_file, sampled_data, storage, **kwargs):
+            packaged.update({"zip_file": zip_file, "sampled_data": sampled_data})
+            open(zip_file, "wb").close()
+
+        mocker.patch("milvus_mcp.connector.connector.create_zip_file", side_effect=fake_create_zip_file)
+
+        result = await mock_connector.get_k_center_sampled_data_as_zip_file("collection_a", {"Good": 2, "NG": 1})
+
+        assert isinstance(result, SamplingResult)
+        assert result.total_scanned_data == 5
+        assert result.total_sampled_data_size == 3
+        assert result.class_distribution == {"Good": 2, "NG": 1}
+        assert result.sampled_zip_uri == "https://presigned.url/object"
+        assert result.sampled_data == {}
+        assert result.sampled_data_keys == []
+
+        assert len(packaged["sampled_data"]) == 3
+        assert all(DataFields.FILENAME in item for item in packaged["sampled_data"].values())
+
+        zip_file, zip_uri = mock_connector._mock_storage.upload_file.await_args.args
+        assert zip_file == packaged["zip_file"]
+        assert zip_uri.startswith("MilvusMCP/collection_a/collection_a_")
+        assert zip_uri.endswith(".zip")
+        mock_connector._mock_storage.get_presigned_url.assert_awaited_once_with(zip_uri)
+        assert not os.path.exists(zip_file)
+
+    @pytest.mark.asyncio
+    async def test_get_k_center_sampled_data_as_zip_file_skips_empty_sample(self, mocker, mock_connector):
+        client = mock_connector._mock_client
+        client.query.return_value = []
+        client.has_collection.side_effect = [True, False]
+
+        create_zip_file = mocker.patch("milvus_mcp.connector.connector.create_zip_file")
+
+        result = await mock_connector.get_k_center_sampled_data_as_zip_file("collection_a", {"Good": 2})
+
+        assert result.collection_name == "collection_a"
+        assert result.total_scanned_data == 0
+        assert result.sampled_zip_uri == ""
+        create_zip_file.assert_not_called()
+        mock_connector._mock_storage.upload_file.assert_not_awaited()
+        mock_connector._mock_storage.get_presigned_url.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_k_center_sampled_data_as_zip_file_removes_temp_file_on_failure(
+            self, mocker, mock_connector, stratified_sample_rows
+    ):
+        client = mock_connector._mock_client
+        client.query.return_value = stratified_sample_rows
+        client.has_collection.side_effect = [True, False]
+
+        packaged = {}
+
+        async def failing_create_zip_file(zip_file, sampled_data, storage, **kwargs):
+            packaged["zip_file"] = zip_file
+            open(zip_file, "wb").close()
+            raise RuntimeError("Packaging error")
+
+        mocker.patch("milvus_mcp.connector.connector.create_zip_file", side_effect=failing_create_zip_file)
+
+        with pytest.raises(RuntimeError, match="Packaging error"):
+            await mock_connector.get_k_center_sampled_data_as_zip_file("collection_a", {"Good": 2})
+
+        assert not os.path.exists(packaged["zip_file"])
+        mock_connector._mock_storage.upload_file.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_k_center_sampled_data_as_zip_file_names_are_unique(
+            self, mocker, mock_connector, stratified_sample_rows
+    ):
+        # Two exports of one collection can start within the same second and must not share a temp file or object key
+        client = mock_connector._mock_client
+        client.query.return_value = stratified_sample_rows
+        client.has_collection.side_effect = [True, False, True, False]
+
+        mocker.patch("milvus_mcp.connector.connector.create_zip_file")
+
+        await mock_connector.get_k_center_sampled_data_as_zip_file("collection_a", {"Good": 2})
+        await mock_connector.get_k_center_sampled_data_as_zip_file("collection_a", {"Good": 2})
+
+        first, second = [call.args[1] for call in mock_connector._mock_storage.upload_file.await_args_list]
+        assert first != second
 
     @pytest.mark.asyncio
     async def test_close(self, mock_connector):

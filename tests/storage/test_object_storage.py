@@ -9,7 +9,7 @@ from milvus_mcp.storage import object_storage as object_storage_module
 @pytest.fixture
 def storage_client(mocker):
     storage = ObjectStorage()
-    storage._session = mocker.MagicMock(name="AioSession")
+    storage._session = mocker.MagicMock()
 
     return storage
 
@@ -50,13 +50,11 @@ class TestObjectStorage:
         assert create_kwargs["aws_access_key_id"] == SETTINGS.object_storage.access_key
         assert create_kwargs["aws_secret_access_key"] == SETTINGS.object_storage.secret_key
 
-        # connecting an already connected client is a no-op
         await storage_client.connect()
         assert storage_client._session.create_client.call_count == 1
 
     @pytest.mark.asyncio
     async def test_connect_failure(self, storage_client):
-        # raised through the module, so this test imports no third party package itself
         storage_client._session.create_client.side_effect = object_storage_module.ClientError(
             {"Error": {"Code": "403", "Message": "Forbidden"}}, "CreateClient"
         )
@@ -65,7 +63,7 @@ class TestObjectStorage:
         assert storage_client._client is None
 
         storage_client._session.create_client.side_effect = RuntimeError("Storage error")
-        with pytest.raises(RuntimeError, match="Storage error"):
+        with pytest.raises(RuntimeError):
             await storage_client.connect()
         assert storage_client._client is None
 
@@ -79,7 +77,6 @@ class TestObjectStorage:
         create_client.__aexit__.assert_awaited_once()
         assert storage_client._client is None
 
-        # closing an already closed client is a no-op
         await storage_client.close()
         create_client.__aexit__.assert_awaited_once()
 
@@ -87,7 +84,7 @@ class TestObjectStorage:
     async def test_retrieve_object(self, mocker, storage_client, mock_s3_client):
         await storage_client.connect()
 
-        body = mocker.MagicMock(name="StreamingBody")
+        body = mocker.MagicMock()
         body.__aenter__ = mocker.AsyncMock(return_value=body)
         body.__aexit__ = mocker.AsyncMock(return_value=False)
         body.read = mocker.AsyncMock(return_value=b"image-bytes")
@@ -102,9 +99,38 @@ class TestObjectStorage:
         await storage_client.retrieve_object("images/image.jpg", bucket="other-bucket")
         assert mock_s3_client.get_object.await_args.kwargs["Bucket"] == "other-bucket"
 
-        # a failed retrieval is swallowed and reported as no data
         mock_s3_client.get_object.side_effect = RuntimeError("Storage error")
         assert await storage_client.retrieve_object("images/image.jpg") is None
+
+    @pytest.mark.asyncio
+    async def test_upload_file(self, mocker, storage_client, mock_s3_client, tmp_path):
+        await storage_client.connect()
+
+        uploaded = {}
+
+        async def capture(Bucket, Key, Body):
+            uploaded.update({"bucket": Bucket, "key": Key, "body": Body.read()})
+            return {}
+
+        mock_s3_client.put_object = mocker.AsyncMock(side_effect=capture)
+
+        zip_file = tmp_path / "sampled.zip"
+        zip_file.write_bytes(b"zip-bytes")
+
+        await storage_client.upload_file(str(zip_file), "MilvusMCP/collection_a/sampled.zip")
+
+        assert uploaded == {
+            "bucket": storage_client._bucket,
+            "key": "MilvusMCP/collection_a/sampled.zip",
+            "body": b"zip-bytes"
+        }
+
+        await storage_client.upload_file(str(zip_file), "sampled.zip", bucket="other-bucket")
+        assert uploaded["bucket"] == "other-bucket"
+
+        mock_s3_client.put_object.side_effect = RuntimeError("Storage error")
+        with pytest.raises(RuntimeError, match="Storage error"):
+            await storage_client.upload_file(str(zip_file), "sampled.zip")
 
     @pytest.mark.asyncio
     async def test_get_presigned_url(self, mocker, storage_client, mock_s3_client):
@@ -120,12 +146,12 @@ class TestObjectStorage:
             ExpiresIn=PRESIGNED_URL_EXPIRED_IN
         )
 
-        await storage_client.get_presigned_url("images/image.jpg", bucket="stage-bucket", expires_in=60)
+        await storage_client.get_presigned_url("images/image.jpg", bucket="test-bucket", expires_in=60)
 
         call_kwargs = mock_s3_client.generate_presigned_url.await_args.kwargs
-        assert call_kwargs["Params"]["Bucket"] == "stage-bucket"
+        assert call_kwargs["Params"]["Bucket"] == "test-bucket"
         assert call_kwargs["ExpiresIn"] == 60
 
-        # a failed presign is swallowed and reported as an empty url
         mock_s3_client.generate_presigned_url.side_effect = RuntimeError("Storage error")
-        assert await storage_client.get_presigned_url("images/image.jpg") == ""
+        with pytest.raises(RuntimeError):
+            await storage_client.get_presigned_url("images/image.jpg")

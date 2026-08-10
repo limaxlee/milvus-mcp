@@ -15,4 +15,3 @@ object_storage:
 feature_extractor:
   host: localhost
   port: 6789
-

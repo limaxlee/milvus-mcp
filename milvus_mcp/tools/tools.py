@@ -14,7 +14,12 @@ tools_mcp = FastMCP(name="tools")
 
 @tools_mcp.tool()
 async def milvus_list_databases(ctx: Context) -> str:
-    """List all databases in the Milvus"""
+    """
+    List all databases in the Milvus
+
+    Returns:
+        Comma separated names of every database in the Milvus instance
+    """
     try:
         connector = ctx.request_context.lifespan_context.connector
         databases = await connector.list_databases()
@@ -25,7 +30,12 @@ async def milvus_list_databases(ctx: Context) -> str:
 
 @tools_mcp.tool()
 async def milvus_list_collections(ctx: Context) -> str:
-    """List all collections in the database"""
+    """
+    List all collections in the database
+
+    Returns:
+        Comma separated names of every collection in the configured database
+    """
     try:
         connector = ctx.request_context.lifespan_context.connector
         collections = await connector.list_collections()
@@ -41,6 +51,10 @@ async def milvus_get_collection_info(collection_name: str, ctx: Context) -> str:
 
     Args:
         collection_name: Name of collection
+
+    Returns:
+        JSON formatted collection description covering its schema, fields and settings, extended with a classes
+        entry holding the number of data per prediction class
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -58,6 +72,9 @@ async def milvus_get_collection_stats(collection_name: str, ctx: Context) -> dic
 
     Args:
         collection_name: Name of collection
+
+    Returns:
+        Collection statistics keyed by metric name, such as row_count
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -98,6 +115,9 @@ async def milvus_create_collection(
             - index_type: Index type
             - **kwargs: Other optional index parameters
         other_kwargs: Additional keyword arguments for the collection creation
+
+    Returns:
+        Confirmation message naming the created collection
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -126,6 +146,9 @@ async def milvus_load_collection(ctx: Context, collection_name: str, replica_num
     Args:
         collection_name: Name of collection to load
         replica_number: Number of replicas
+
+    Returns:
+        Confirmation message naming the loaded collection and its replica count
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -143,6 +166,9 @@ async def milvus_release_collection(collection_name: str, ctx: Context) -> str:
 
     Args:
         collection_name: Name of collection to release
+
+    Returns:
+        Confirmation message naming the released collection
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -165,6 +191,10 @@ async def milvus_insert_data(
     Args:
         collection_name: Name of collection
         data: List of dictionaries, each representing a record
+
+    Returns:
+        Confirmation message carrying the insert result, which holds the number of inserted data and their primary
+        keys
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -187,6 +217,9 @@ async def milvus_delete_entities(
     Args:
         collection_name: Name of collection
         filter_expression: Filter expression to select entities to delete
+
+    Returns:
+        Confirmation message carrying the delete result, which holds the number of deleted entities
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -223,6 +256,14 @@ async def milvus_vector_search(
         filter_expression: Optional filter expression
         radius: Optional lower bound for range search
         range_filter: Optional upper bound for range search
+
+    Returns:
+        Search result with the following fields:
+            - collection_name: Name of the searched collection
+            - search_data_count: Number of matches found
+            - search_data_keys: Primary keys of the matches, ordered from nearest to furthest
+            - search_data_distance: Distance of each match to the query vector, in the same order as search_data_keys
+            - search_data: Requested output fields of each match, keyed by primary key
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -271,6 +312,15 @@ async def milvus_extract_embeddings_and_vector_search(
         filter_expression: Optional filter expression
         radius: Optional lower bound for range search
         range_filter: Optional upper bound for range search
+
+    Returns:
+        Search result with the following fields:
+            - collection_name: Name of the searched collection
+            - search_data_count: Number of matches found
+            - search_data_keys: Primary keys of the matches, ordered from nearest to furthest
+            - search_data_distance: Distance of each match to the query vector, in the same order as search_data_keys
+            - search_data: Output fields of each match keyed by primary key, always including filename, prediction
+              and data_uri, where data_uri is a presigned download url which expires in 2 hours
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -309,6 +359,9 @@ async def milvus_query_collection(
         filter_expression: Filter expression
         output_fields: Fields to include in results
         limit: Maximum number of results
+
+    Returns:
+        Matching data rows one per block, or a message stating that the filter expression matched nothing
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -353,6 +406,17 @@ async def milvus_get_k_center_sampled_data(
         keep_classes: If given, classes to retain entirely when sampling
         output_fields: If given, selected columns are returned with these fields
         batch_size: Number of data in single batch when scanning the collection data, default to 1000
+
+    Returns:
+        Sampling result with the following fields:
+            - collection_name: Name of the sampled collection, suffixed with _object when the matching detection
+              collection is sampled instead
+            - total_scanned_data: Number of data scanned in the collection
+            - total_sampled_data_size: Number of data selected by sampling
+            - class_distribution: Number of sampled data per class
+            - sampled_data_keys: Primary keys of the sampled data
+            - sampled_data: Sampled data rows keyed by primary key, without the vector field
+            - sampled_zip_uri: Always empty, only milvus_get_k_center_sampled_data_as_zip_file fills it
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -367,3 +431,54 @@ async def milvus_get_k_center_sampled_data(
         )
     except Exception as e:
         raise ToolError(f"Failed to k-center greedy sample data in collection {collection_name}: {str(e)}")
+
+
+@tools_mcp.tool()
+async def milvus_get_k_center_sampled_data_as_zip_file(
+        ctx: Context,
+        collection_name: str,
+        vector_field: str,
+        sample_classes: dict[str, int],
+        metric_type: str = METRIC_TYPE,
+        keep_classes: list[str] | None = None,
+        output_fields: list[str] | None = None,
+        batch_size: int = BATCH_SIZE
+) -> SamplingResult:
+    """
+    Class-aware (stratified) sample collection using k-center greedy over its vector field and create a zip file for
+    sampled data and upload it to object storage
+
+    Args:
+        collection_name: Name of collection to sample
+        vector_field: Field containing vectors to sample over
+        sample_classes: Per-class sampling cap, e.g. {"Good": 800} — sample that class to 800
+        metric_type: Distance metric (COSINE, L2, IP), default to COSINE
+        keep_classes: If given, classes to retain entirely when sampling
+        output_fields: If given, selected columns are returned with these fields
+        batch_size: Number of data in single batch when scanning the collection data, default to 1000
+
+    Returns:
+        Sampling result with the following fields:
+            - collection_name: Name of the sampled collection, suffixed with _object when the matching detection
+              collection is sampled instead
+            - total_scanned_data: Number of data scanned in the collection
+            - total_sampled_data_size: Number of data selected by sampling
+            - class_distribution: Number of sampled data per class
+            - sampled_data_keys: Always empty, the sampled data is delivered through the zip file instead
+            - sampled_data: Always empty, the sampled data is delivered through the zip file instead
+            - sampled_zip_uri: Presigned download url for the zip file which expires in 2 hours, empty when sampling
+              matched no data
+    """
+    try:
+        connector = ctx.request_context.lifespan_context.connector
+        return await connector.get_k_center_sampled_data_as_zip_file(
+            collection_name=collection_name,
+            vector_field=vector_field,
+            metric_type=metric_type,
+            keep_classes=keep_classes,
+            sample_classes=sample_classes,
+            output_fields=output_fields,
+            batch_size=batch_size
+        )
+    except Exception as e:
+        raise ToolError(f"Failed to package sampled data of collection {collection_name} as zip file: {str(e)}")

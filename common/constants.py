@@ -1,7 +1,10 @@
+import os
 import pathlib
 from enum import StrEnum
 
 ROOT_DIR = pathlib.Path(__file__).parent.parent
+TEMP_DIR = ROOT_DIR.joinpath("temp")
+os.makedirs(TEMP_DIR, exist_ok=True)
 
 LIMIT = 5
 METRIC_TYPE = "COSINE"
@@ -18,6 +21,8 @@ DETECTION_COLLECTION_SUFFIX = "_object"
 
 FEATURE_EXTRACTION_TIMEOUT = 60.0
 PRESIGNED_URL_EXPIRED_IN = 7200
+
+ZIP_FETCH_CONCURRENCY = 16
 
 
 class DataFields(StrEnum):
@@ -36,3 +41,4 @@ class MetricTypes(StrEnum):
 
 class SamplingMethods(StrEnum):
     K_CENTER_GREEDY = "k_center_greedy"
+

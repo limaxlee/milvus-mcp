@@ -1,17 +1,20 @@
+import os
 import logging
+from uuid import uuid4
 from typing import Any
 from collections import Counter
 from pymilvus import AsyncMilvusClient, DataType
 
 from common.config import SETTINGS
 from common.constants import (
-    DIMENSION, METRIC_TYPE, LIMIT, BATCH_SIZE, DETECTION_COLLECTION_SUFFIX,
+    TEMP_DIR, DIMENSION, METRIC_TYPE, LIMIT, BATCH_SIZE, DETECTION_COLLECTION_SUFFIX,
     DataFields, SamplingMethods
 )
 from milvus_mcp.extractor import FeatureExtractor
 from milvus_mcp.storage import ObjectStorage
 from milvus_mcp.sampling import sample_data
 from milvus_mcp.schemas import SamplingResult, VectorSearchResult
+from milvus_mcp.utils import create_zip_file, get_current_utc_time_as_string
 
 logger = logging.getLogger(__name__)
 
@@ -331,8 +334,51 @@ class MilvusConnector:
             logger.info(f"K-center greedy sampled {len(result.sampled_data_keys)} data in {collection_name} collection")
             return result
         except Exception as e:
-            logger.exception(f"Failed to k-center greedy sample  data in {collection_name} collection: {str(e)}")
+            logger.exception(f"Failed to k-center greedy sample data in {collection_name} collection: {str(e)}")
             raise
+
+    async def get_k_center_sampled_data_as_zip_file(
+            self,
+            collection_name: str,
+            sample_classes: dict[str, int],
+            vector_field: str = DataFields.VECTOR,
+            metric_type: str = METRIC_TYPE,
+            keep_classes: list[str] | None = None,
+            output_fields: list[str] | None = None,
+            batch_size: int = BATCH_SIZE
+    ) -> SamplingResult:
+        # Two exports of the same collection can start within the same second, so the suffix keeps them apart
+        zip_name = f"{collection_name}_{get_current_utc_time_as_string()}_{uuid4().hex[:8]}.zip"
+        zip_file = os.path.join(TEMP_DIR, zip_name)
+        zip_uri = f"MilvusMCP/{collection_name}/{zip_name}"
+        try:
+            sample_result = await self.get_k_center_sampled_data(
+                collection_name=collection_name,
+                sample_classes=sample_classes,
+                vector_field=vector_field,
+                metric_type=metric_type,
+                keep_classes=keep_classes,
+                output_fields=output_fields,
+                batch_size=batch_size
+            )
+
+            result = sample_result.model_copy(update={"sampled_data": {}, "sampled_data_keys": []})
+            if not sample_result.sampled_data:
+                logger.warning(f"No data sampled in {collection_name} collection, skipped zip file packaging")
+                return result
+
+            await create_zip_file(zip_file, sample_result.sampled_data, self._storage)
+            await self._storage.upload_file(zip_file, zip_uri)
+            result.sampled_zip_uri = await self._storage.get_presigned_url(zip_uri)
+
+            logger.info(f"K-center greedy sampled data in {collection_name} collection and uploaded to OS: {zip_uri}")
+            return result
+        except Exception as e:
+            logger.exception(f"Failed to package sampled data of {collection_name} collection as zip file: {str(e)}")
+            raise
+        finally:
+            if os.path.exists(zip_file):
+                os.remove(zip_file)
 
     async def close(self):
         try:

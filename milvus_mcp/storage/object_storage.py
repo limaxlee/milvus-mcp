@@ -68,6 +68,17 @@ class ObjectStorage:
             logger.exception(f"Failed to retrieve object {key} from bucket {bucket}: {e}")
             return None
 
+    async def upload_file(self, file_path: str, key: str, bucket: str = None):
+        bucket = bucket if bucket else self._bucket
+        try:
+            with open(file_path, "rb") as file:
+                await self._client.put_object(Bucket=bucket, Key=key, Body=file)
+
+            logger.info(f"Uploaded {file_path} to {bucket}:{key}")
+        except Exception as e:
+            logger.exception(f"Failed to upload {file_path} to {bucket}:{key}: {e}")
+            raise
+
     async def get_presigned_url(self, key: str, bucket: str = None, expires_in: int = PRESIGNED_URL_EXPIRED_IN) -> str:
         bucket = bucket if bucket else self._bucket
         try:
@@ -81,4 +92,4 @@ class ObjectStorage:
             return response
         except Exception as e:
             logger.exception(f"Failed to generate presigned url for {key} from bucket {bucket}: {e}")
-            return ""
+            raise

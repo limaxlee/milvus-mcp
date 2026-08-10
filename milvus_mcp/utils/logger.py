@@ -10,8 +10,24 @@ from concurrent.futures import ProcessPoolExecutor
 
 from common.constants import ROOT_DIR
 
-spawn_ctx = multiprocessing.get_context("spawn")
-executor = ProcessPoolExecutor(max_workers=os.cpu_count(), mp_context=spawn_ctx)
+_executor: ProcessPoolExecutor | None = None
+
+
+def _get_executor() -> ProcessPoolExecutor:
+    # Created on first use so that importing this module, which every spawned worker does, costs nothing
+    global _executor
+    if _executor is None:
+        spawn_ctx = multiprocessing.get_context("spawn")
+        _executor = ProcessPoolExecutor(max_workers=os.cpu_count(), mp_context=spawn_ctx)
+
+    return _executor
+
+
+def shutdown_logs_executor() -> None:
+    global _executor
+    if _executor is not None:
+        _executor.shutdown(wait=True)
+        _executor = None
 
 
 class LogConfig:
@@ -56,7 +72,7 @@ async def get_logs_zip_file() -> None | bytes:
         return
 
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(executor, partial(_create_logs_zip_file, log_files))
+    return await loop.run_in_executor(_get_executor(), partial(_create_logs_zip_file, log_files))
 
 
 def _create_logs_zip_file(log_files: list[str]) -> bytes:

@@ -84,9 +84,20 @@ def mock_async_milvus_client(mocker):
 @pytest.fixture
 def mock_connector(mocker, mock_async_milvus_client):
     mocker.patch("milvus_mcp.connector.connector.AsyncMilvusClient", return_value=mock_async_milvus_client)
+
+    mock_extractor = mocker.patch("milvus_mcp.connector.connector.FeatureExtractor").return_value
+    mock_extractor.extract_feature_vector = mocker.AsyncMock(return_value=[1.0, 2.0, 3.0])
+
     storage = mocker.MagicMock()
+    storage.retrieve_object = mocker.AsyncMock(return_value=b"image_bytes")
+    storage.upload_file = mocker.AsyncMock(return_value=None)
+    storage.get_presigned_url = mocker.AsyncMock(return_value="https://presigned.url/object")
+
     connector = MilvusConnector(storage)
     connector._mock_client = mock_async_milvus_client
+    connector._mock_storage = storage
+    connector._mock_extractor = mock_extractor
+
     yield connector
 
 

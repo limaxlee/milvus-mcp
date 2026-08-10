@@ -10,7 +10,7 @@ from milvus_mcp.middleware import LoggingMiddleware
 from milvus_mcp.storage import ObjectStorage
 from milvus_mcp.routes import custom_mcp
 from milvus_mcp.tools import tools_mcp
-from milvus_mcp.utils import initialize_logger
+from milvus_mcp.utils import initialize_logger, shutdown_logs_executor
 
 
 @asynccontextmanager
@@ -24,6 +24,7 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[MilvusContext]:
     finally:
         await connector.close()
         await storage.close()
+        shutdown_logs_executor()
 
 
 mcp = FastMCP(name="Milvus MCP Server", lifespan=lifespan)
