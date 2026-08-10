@@ -5,7 +5,11 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server import Context, FastMCP
 
 from common.constants import DIMENSION, METRIC_TYPE, LIMIT, BATCH_SIZE
-from milvus_mcp.schemas import SamplingResult, VectorSearchResult
+from milvus_mcp.schemas import (
+    ListDatabasesResult, ListCollectionsResult, CollectionInfoResult, CollectionStatsResult, CreateCollectionResult,
+    LoadCollectionResult, ReleaseCollectionResult, InsertDataResult, DeleteEntitiesResult, QueryResult,
+    SamplingResult, VectorSearchResult
+)
 
 logger = logging.getLogger(__name__)
 
@@ -13,39 +17,39 @@ tools_mcp = FastMCP(name="tools")
 
 
 @tools_mcp.tool()
-async def milvus_list_databases(ctx: Context) -> str:
+async def milvus_list_databases(ctx: Context) -> ListDatabasesResult:
     """
     List all databases in the Milvus
 
     Returns:
-        Comma separated names of every database in the Milvus instance
+        Database list with the following fields:
+            - databases: Names of every database in the Milvus instance
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        databases = await connector.list_databases()
-        return f"Databases in Milvus:\n{', '.join(databases)}"
+        return ListDatabasesResult(databases=await connector.list_databases())
     except Exception as e:
         raise ToolError(f"Failed to list databases: {str(e)}")
 
 
 @tools_mcp.tool()
-async def milvus_list_collections(ctx: Context) -> str:
+async def milvus_list_collections(ctx: Context) -> ListCollectionsResult:
     """
     List all collections in the database
 
     Returns:
-        Comma separated names of every collection in the configured database
+        Collection list with the following fields:
+            - collections: Names of every collection in the configured database
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        collections = await connector.list_collections()
-        return f"Collections in database:\n{', '.join(collections)}"
+        return ListCollectionsResult(collections=await connector.list_collections())
     except Exception as e:
         raise ToolError(f"Failed to list collections: {str(e)}")
 
 
 @tools_mcp.tool()
-async def milvus_get_collection_info(collection_name: str, ctx: Context) -> str:
+async def milvus_get_collection_info(collection_name: str, ctx: Context) -> CollectionInfoResult:
     """
     Lists detailed information about a specific collection
 
@@ -53,20 +57,28 @@ async def milvus_get_collection_info(collection_name: str, ctx: Context) -> str:
         collection_name: Name of collection
 
     Returns:
-        JSON formatted collection description covering its schema, fields and settings, extended with a classes
-        entry holding the number of data per prediction class
+        Collection information with the following fields:
+            - collection_name: Name of the described collection
+            - classes: Number of data per prediction class
+            - collection_info: Collection description covering its schema, fields and settings
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
         collection_info = await connector.get_collection_info(collection_name)
-        info_str = json.dumps(collection_info, indent=2, default=list)
-        return f"Collection information:\n{info_str}"
+        # The description carries values such as sets and enums, so coerce them the way the json dump used to
+        collection_info = json.loads(json.dumps(collection_info, default=list))
+
+        return CollectionInfoResult(
+            collection_name=collection_name,
+            classes=collection_info.pop("classes", {}),
+            collection_info=collection_info
+        )
     except Exception as e:
         raise ToolError(f"Failed to get {collection_name} collection info: {str(e)}")
 
 
 @tools_mcp.tool()
-async def milvus_get_collection_stats(collection_name: str, ctx: Context) -> dict[str, Any]:
+async def milvus_get_collection_stats(collection_name: str, ctx: Context) -> CollectionStatsResult:
     """
     Lists the statistics collected on a specific collection
 
@@ -74,12 +86,15 @@ async def milvus_get_collection_stats(collection_name: str, ctx: Context) -> dic
         collection_name: Name of collection
 
     Returns:
-        Collection statistics keyed by metric name, such as row_count
+        Collection statistics with the following fields:
+            - collection_name: Name of the inspected collection
+            - collection_stats: Statistics keyed by metric name, such as row_count
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
         collection_stats = await connector.get_collection_stats(collection_name)
-        return collection_stats
+
+        return CollectionStatsResult(collection_name=collection_name, collection_stats=collection_stats)
     except Exception as e:
         raise ToolError(f"Failed to get {collection_name} collection statistics: {str(e)}")
 
@@ -96,7 +111,7 @@ async def milvus_create_collection(
     field_schema: list[dict[str, Any]] | None = None,
     index_params: list[dict[str, Any]] | None = None,
     other_kwargs: dict[str, Any] | None = None
-) -> str:
+) -> CreateCollectionResult:
     """
     Create a new collection with specified schema.
 
@@ -117,7 +132,9 @@ async def milvus_create_collection(
         other_kwargs: Additional keyword arguments for the collection creation
 
     Returns:
-        Confirmation message naming the created collection
+        Creation result with the following fields:
+            - collection_name: Name of the created collection
+            - collection_created: Always true, a failed creation raises instead
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -133,13 +150,17 @@ async def milvus_create_collection(
             **(other_kwargs if other_kwargs is not None else {})
         )
 
-        return f"Collection {collection_name} created successfully"
+        return CreateCollectionResult(collection_name=collection_name)
     except Exception as e:
         raise ToolError(f"Failed to create {collection_name} collection: {str(e)}")
 
 
 @tools_mcp.tool()
-async def milvus_load_collection(ctx: Context, collection_name: str, replica_number: int = 1) -> str:
+async def milvus_load_collection(
+        ctx: Context,
+        collection_name: str,
+        replica_number: int = 1
+) -> LoadCollectionResult:
     """
     Load a collection into memory for search and query.
 
@@ -148,19 +169,22 @@ async def milvus_load_collection(ctx: Context, collection_name: str, replica_num
         replica_number: Number of replicas
 
     Returns:
-        Confirmation message naming the loaded collection and its replica count
+        Load result with the following fields:
+            - collection_name: Name of the loaded collection
+            - collection_loaded: Always true, a failed load raises instead
+            - replica_number: Number of replicas the collection was loaded with
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
         await connector.load_collection(collection_name=collection_name, replica_number=replica_number)
 
-        return f"Collection {collection_name} loaded successfully with {replica_number} replica(s)"
+        return LoadCollectionResult(collection_name=collection_name, replica_number=replica_number)
     except Exception as e:
         raise ToolError(f"Failed to create {collection_name} collection: {str(e)}")
 
 
 @tools_mcp.tool()
-async def milvus_release_collection(collection_name: str, ctx: Context) -> str:
+async def milvus_release_collection(collection_name: str, ctx: Context) -> ReleaseCollectionResult:
     """
     Release a collection from memory.
 
@@ -168,13 +192,15 @@ async def milvus_release_collection(collection_name: str, ctx: Context) -> str:
         collection_name: Name of collection to release
 
     Returns:
-        Confirmation message naming the released collection
+        Release result with the following fields:
+            - collection_name: Name of the released collection
+            - collection_released: Always true, a failed release raises instead
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
         await connector.release_collection(collection_name=collection_name)
 
-        return f"Collection {collection_name} released successfully"
+        return ReleaseCollectionResult(collection_name=collection_name)
     except Exception as e:
         raise ToolError(f"Failed to release {collection_name} collection: {str(e)}")
 
@@ -184,7 +210,7 @@ async def milvus_insert_data(
         collection_name: str,
         data: list[dict[str, Any]],
         ctx: Context
-) -> str:
+) -> InsertDataResult:
     """
     Insert data into a collection.
 
@@ -193,14 +219,20 @@ async def milvus_insert_data(
         data: List of dictionaries, each representing a record
 
     Returns:
-        Confirmation message carrying the insert result, which holds the number of inserted data and their primary
-        keys
+        Insert result with the following fields:
+            - collection_name: Name of the collection the data was inserted into
+            - insert_count: Number of inserted data
+            - primary_keys: Primary keys assigned to the inserted data
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
         result = await connector.insert_data(collection_name, data)
 
-        return f"Data inserted into collection {collection_name} with result: {str(result)}"
+        return InsertDataResult(
+            collection_name=collection_name,
+            insert_count=result.get("insert_count", 0),
+            primary_keys=result.get("ids", [])
+        )
     except Exception as e:
         raise ToolError(f"Failed to insert data to {collection_name} collection: {str(e)}")
 
@@ -210,7 +242,7 @@ async def milvus_delete_entities(
         collection_name: str,
         filter_expression: str,
         ctx: Context
-) -> str:
+) -> DeleteEntitiesResult:
     """
     Delete entities from a collection based on filter expression.
 
@@ -219,13 +251,15 @@ async def milvus_delete_entities(
         filter_expression: Filter expression to select entities to delete
 
     Returns:
-        Confirmation message carrying the delete result, which holds the number of deleted entities
+        Delete result with the following fields:
+            - collection_name: Name of the collection the entities were deleted from
+            - delete_count: Number of deleted entities
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
         result = await connector.delete_entities(collection_name, filter_expression)
 
-        return f"Entities deleted from collection {collection_name} with result: {str(result)}"
+        return DeleteEntitiesResult(collection_name=collection_name, delete_count=result.get("delete_count", 0))
     except Exception as e:
         raise ToolError(f"Failed to delete data from {collection_name} using filter {filter_expression}: {str(e)}")
 
@@ -350,7 +384,7 @@ async def milvus_query_collection(
         filter_expression: str,
         output_fields: list[str] | None = None,
         limit: int = LIMIT
-) -> str:
+) -> QueryResult:
     """
     Query collection using filter expressions.
 
@@ -361,7 +395,10 @@ async def milvus_query_collection(
         limit: Maximum number of results
 
     Returns:
-        Matching data rows one per block, or a message stating that the filter expression matched nothing
+        Query result with the following fields:
+            - collection_name: Name of the queried collection
+            - query_data_count: Number of data matching the filter expression
+            - query_data: Matching data rows, empty when the filter expression matched nothing
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -372,14 +409,7 @@ async def milvus_query_collection(
             limit=limit
         )
 
-        if results:
-            output = f"Query results for {filter_expression} in collection {collection_name}:\n\n"
-            for result in results:
-                output += f"{result}\n\n"
-        else:
-            output = f"No query result for {collection_name}"
-
-        return output
+        return QueryResult(collection_name=collection_name, query_data_count=len(results), query_data=results)
     except Exception as e:
         raise ToolError(f"Failed to query from {collection_name} collection using {filter_expression}: {str(e)}")
 

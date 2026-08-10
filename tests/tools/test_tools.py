@@ -1,4 +1,3 @@
-import json
 import pytest
 import pytest_asyncio
 from fastmcp.exceptions import ToolError
@@ -20,8 +19,7 @@ class TestMilvusMCPTools:
         tool = tools_by_name["milvus_list_databases"]
         result = await tool(mock_context)
 
-        assert "default" in result
-        assert "test_db" in result
+        assert result.databases == ["default", "test_db"]
 
         mock_context.request_context.lifespan_context.connector.list_databases = \
             mocker.AsyncMock(side_effect=RuntimeError())
@@ -33,8 +31,7 @@ class TestMilvusMCPTools:
         tool = tools_by_name["milvus_list_collections"]
         result = await tool(mock_context)
 
-        assert "collection_a" in result
-        assert "collection_b" in result
+        assert result.collections == ["collection_a", "collection_b"]
 
         mock_context.request_context.lifespan_context.connector.list_collections = \
             mocker.AsyncMock(side_effect=RuntimeError())
@@ -46,10 +43,11 @@ class TestMilvusMCPTools:
         tool = tools_by_name["milvus_get_collection_info"]
         result = await tool("collection_a", mock_context)
 
-        prefix = "Collection information:\n"
-        assert result.startswith(prefix)
-        parsed_result = json.loads(result[len(prefix):])
-        assert parsed_result["collection_name"] == "collection_a"
+        assert result.collection_name == "collection_a"
+        assert result.classes == {"None": 1}
+        assert result.collection_info["auto_id"] is False
+        assert result.collection_info["fields"] == [{"name": "id", "type": 5, "is_primary": True}]
+        assert "classes" not in result.collection_info
 
         await tool("my_collection", mock_context)
 
@@ -66,7 +64,8 @@ class TestMilvusMCPTools:
         tool = tools_by_name["milvus_get_collection_stats"]
         result = await tool("collection_a", mock_context)
 
-        assert result == {"row_count": 42}
+        assert result.collection_name == "collection_a"
+        assert result.collection_stats == {"row_count": 42}
 
         await tool("my_collection", mock_context)
 
@@ -82,7 +81,10 @@ class TestMilvusMCPTools:
     async def test_milvus_create_collection(self, mocker, tools_by_name, mock_context):
         tool = tools_by_name["milvus_create_collection"]
 
-        await tool(mock_context, "collection_c", True, 768, "id", "vector", "COSINE", None, None, None)
+        result = await tool(mock_context, "collection_c", True, 768, "id", "vector", "COSINE", None, None, None)
+
+        assert result.collection_name == "collection_c"
+        assert result.collection_created is True
 
         connector = mock_context.request_context.lifespan_context.connector
         assert connector._mock_client.create_collection.await_count == 1
@@ -94,7 +96,11 @@ class TestMilvusMCPTools:
     @pytest.mark.asyncio
     async def test_milvus_load_collection(self, mocker, tools_by_name, mock_context):
         tool = tools_by_name["milvus_load_collection"]
-        await tool(mock_context, "collection_c", 1)
+        result = await tool(mock_context, "collection_c", 2)
+
+        assert result.collection_name == "collection_c"
+        assert result.collection_loaded is True
+        assert result.replica_number == 2
 
         connector = mock_context.request_context.lifespan_context.connector
         assert connector._mock_client.load_collection.await_count == 1
@@ -107,7 +113,10 @@ class TestMilvusMCPTools:
     @pytest.mark.asyncio
     async def test_milvus_release_collection(self, mocker, tools_by_name, mock_context):
         tool = tools_by_name["milvus_release_collection"]
-        await tool("collection_c", mock_context)
+        result = await tool("collection_c", mock_context)
+
+        assert result.collection_name == "collection_c"
+        assert result.collection_released is True
 
         connector = mock_context.request_context.lifespan_context.connector
         assert connector._mock_client.release_collection.await_count == 1
@@ -122,7 +131,9 @@ class TestMilvusMCPTools:
         tool = tools_by_name["milvus_insert_data"]
         result = await tool("collection_a", [{"vector": [1.0, 1.1, 1.2]}], mock_context)
 
-        assert result == f"Data inserted into collection collection_a with result: ['462025919837366264']"
+        assert result.collection_name == "collection_a"
+        assert result.insert_count == 1
+        assert result.primary_keys == [462025919837366264]
 
         await tool("collection_b", [{"vector": [1.0, 1.1, 1.2]}], mock_context)
 
@@ -139,7 +150,8 @@ class TestMilvusMCPTools:
         tool = tools_by_name["milvus_delete_entities"]
         result = await tool("collection_a", "image_name == 'image.jpg'", mock_context)
 
-        assert result == "Entities deleted from collection collection_a with result: {'delete_count': 1}"
+        assert result.collection_name == "collection_a"
+        assert result.delete_count == 1
 
         await tool("collection_b", "image_name == 'image.jpg'", mock_context)
 
@@ -195,7 +207,11 @@ class TestMilvusMCPTools:
     @pytest.mark.asyncio
     async def test_milvus_query_collection(self, mocker, tools_by_name, mock_context):
         tool = tools_by_name["milvus_query_collection"]
-        await tool(mock_context, "collection_a", "image_name == 'image.jpg'")
+        result = await tool(mock_context, "collection_a", "image_name == 'image.jpg'")
+
+        assert result.collection_name == "collection_a"
+        assert result.query_data_count == 1
+        assert result.query_data == [{"pk": "462025919837366269"}]
 
         connector = mock_context.request_context.lifespan_context.connector
         assert connector._mock_client.query.await_count == 1

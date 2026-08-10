@@ -109,7 +109,7 @@ class TestMilvusConnector:
     @pytest.mark.asyncio
     async def test_insert_data(self, mock_connector):
         result = await mock_connector.insert_data("collection_a", [{"vector": [1.0, 1.1, 1.2]}])
-        assert result == ["462025919837366264"]
+        assert result == {"insert_count": 1, "ids": [462025919837366264]}
         assert mock_connector._mock_client.insert.await_count == 1
 
         mock_connector._mock_client.insert.side_effect = RuntimeError("Connector error")

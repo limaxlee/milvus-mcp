@@ -57,8 +57,8 @@ def mock_async_milvus_client(mocker):
     client.load_collection = mocker.AsyncMock(return_value=None)
     client.release_collection = mocker.AsyncMock(return_value=None)
     client.get_collection_stats = mocker.AsyncMock(return_value={"row_count": 42})
-    client.insert_data = mocker.AsyncMock(return_value=["462025919837366264"])
-    client.insert = mocker.AsyncMock(return_value=["462025919837366264"])
+    client.insert_data = mocker.AsyncMock(return_value={"insert_count": 1, "ids": [462025919837366264]})
+    client.insert = mocker.AsyncMock(return_value={"insert_count": 1, "ids": [462025919837366264]})
     client.delete_entities = mocker.AsyncMock(return_value={"delete_count": 1})
     client.delete = mocker.AsyncMock(return_value={"delete_count": 1})
     client.search = mocker.AsyncMock(return_value=[[
