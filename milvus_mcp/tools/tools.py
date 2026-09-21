@@ -118,7 +118,7 @@ async def milvus_create_collection(
     Args:
         collection_name: Name for the new collection
         auto_id: Whether to auto generate id, default to True
-        dimension: Vector dimension, default to 768
+        dimension: Vector dimension, default to 2048
         primary_field_name: Name of the primary field, default to "id"
         vector_field_name: Name of the vector field, default to "vector"
         metric_type: Metric type, default to "COSINE"

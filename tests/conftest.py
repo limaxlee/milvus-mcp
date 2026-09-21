@@ -52,7 +52,7 @@ def mock_async_milvus_client(mocker):
         }
     )
     client.get_collection_stats = mocker.AsyncMock(return_value={"row_count": 42})
-    client.has_collection = mocker.AsyncMock(return_value=False)
+    client.has_collection = mocker.AsyncMock(return_value=True)
     client.create_collection = mocker.AsyncMock(return_value=None)
     client.load_collection = mocker.AsyncMock(return_value=None)
     client.release_collection = mocker.AsyncMock(return_value=None)

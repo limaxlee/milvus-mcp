@@ -9,8 +9,8 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 LIMIT = 5
 METRIC_TYPE = "COSINE"
 
-# FIXME: reflect feature extractor model dimension
-DIMENSION = 768
+# Feature extractor (dinov3_vit, hidden_size 1024 x layers [20, 24] -> patch_mean_concat)
+DIMENSION = 2048
 
 HEALTH_CHECK_TIMEOUT = 5.0
 HEALTH_CHECK_PORT = 9091
@@ -18,6 +18,8 @@ HEALTH_CHECK_PORT = 9091
 BATCH_SIZE = 1000
 
 DETECTION_COLLECTION_SUFFIX = "_object"
+# A collection may be stored under its own name or with this prefix (ABC -> VFM_ABC)
+VFM_COLLECTION_PREFIX = "VFM_"
 
 FEATURE_EXTRACTION_TIMEOUT = 60.0
 PRESIGNED_URL_EXPIRED_IN = 7200

@@ -2,7 +2,7 @@ import pytest
 import pytest_asyncio
 from fastmcp.exceptions import ToolError
 
-from common.constants import DataFields
+from common.constants import DataFields, VFM_COLLECTION_PREFIX
 from milvus_mcp.tools import tools_mcp
 from milvus_mcp.schemas import SamplingResult
 
@@ -80,6 +80,7 @@ class TestMilvusMCPTools:
     @pytest.mark.asyncio
     async def test_milvus_create_collection(self, mocker, tools_by_name, mock_context):
         tool = tools_by_name["milvus_create_collection"]
+        mock_context.request_context.lifespan_context.connector._mock_client.has_collection.return_value = False
 
         result = await tool(mock_context, "collection_c", True, 768, "id", "vector", "COSINE", None, None, None)
 
@@ -177,6 +178,22 @@ class TestMilvusMCPTools:
             await tool(mock_context, "collection_a", [1.0, 2.0], "vector")
 
     @pytest.mark.asyncio
+    async def test_milvus_vector_search_vfm_prefixed_fallback(self, tools_by_name, mock_context):
+        tool = tools_by_name["milvus_vector_search"]
+        client = mock_context.request_context.lifespan_context.connector._mock_client
+
+        # ABC missing, VFM_ABC exists -> the search runs against VFM_ABC
+        client.has_collection.side_effect = [False, True]
+        result = await tool(mock_context, "ABC", [1.0, 2.0], "vector")
+        assert result.collection_name == f"{VFM_COLLECTION_PREFIX}ABC"
+        assert client.search.await_args.kwargs["collection_name"] == f"{VFM_COLLECTION_PREFIX}ABC"
+
+        # Neither exists -> the tool error names the requested collection
+        client.has_collection.side_effect = [False, False]
+        with pytest.raises(ToolError, match="Collection ABC doesn't exist"):
+            await tool(mock_context, "ABC", [1.0, 2.0], "vector")
+
+    @pytest.mark.asyncio
     async def test_milvus_extract_embeddings_and_vector_search(self, mocker, tools_by_name, mock_context):
         tool = tools_by_name["milvus_extract_embeddings_and_vector_search"]
         connector = mock_context.request_context.lifespan_context.connector
@@ -196,7 +213,7 @@ class TestMilvusMCPTools:
 
         connector._mock_storage.retrieve_object.assert_awaited_once_with("data/uri.jpg")
         connector._mock_extractor.extract_feature_vector.assert_awaited_once_with(
-            "collection_a", "image.jpg", b"image_bytes", "image/jpeg"
+            "image.jpg", b"image_bytes", "image/jpeg"
         )
 
         mock_context.request_context.lifespan_context.connector.extract_embeddings_and_vector_search = \

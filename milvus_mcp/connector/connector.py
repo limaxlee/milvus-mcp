@@ -7,7 +7,7 @@ from pymilvus import AsyncMilvusClient, DataType
 
 from common.config import SETTINGS
 from common.constants import (
-    TEMP_DIR, DIMENSION, METRIC_TYPE, LIMIT, BATCH_SIZE, DETECTION_COLLECTION_SUFFIX,
+    TEMP_DIR, DIMENSION, METRIC_TYPE, LIMIT, BATCH_SIZE, DETECTION_COLLECTION_SUFFIX, VFM_COLLECTION_PREFIX,
     DataFields, SamplingMethods
 )
 from milvus_mcp.extractor import FeatureExtractor
@@ -26,6 +26,21 @@ class MilvusConnector:
         self._client = AsyncMilvusClient(uri=self._uri, token=self._token, db_name=SETTINGS.milvus.db_name)
         self._storage = storage
         self._extractor = FeatureExtractor()
+
+    async def _resolve_collection_name(self, collection_name: str) -> str:
+        """Return the existing collection name for the input, falling back to the VFM_-prefixed one.
+
+        ABC -> ABC if it exists, else VFM_ABC if it exists, else raise ValueError.
+        """
+        if await self._client.has_collection(collection_name):
+            return collection_name
+
+        prefixed_name = f"{VFM_COLLECTION_PREFIX}{collection_name}"
+        if not collection_name.startswith(VFM_COLLECTION_PREFIX) and await self._client.has_collection(prefixed_name):
+            logger.info(f"Collection {collection_name} doesn't exist, using {prefixed_name} instead")
+            return prefixed_name
+
+        raise ValueError(f"Collection {collection_name} doesn't exist")
 
     async def list_databases(self) -> list[str]:
         try:
@@ -49,6 +64,7 @@ class MilvusConnector:
 
     async def get_collection_info(self, collection_name: str) -> dict:
         try:
+            collection_name = await self._resolve_collection_name(collection_name)
             result = await self._client.describe_collection(collection_name)
             data_rows = await self._scan_data(collection_name, [])
             counter = Counter(row.get(DataFields.PREDICTION) for row in data_rows)
@@ -63,6 +79,7 @@ class MilvusConnector:
 
     async def get_collection_stats(self, collection_name: str) -> dict[str, Any]:
         try:
+            collection_name = await self._resolve_collection_name(collection_name)
             results = await self._client.get_collection_stats(collection_name)
             logger.info(f"Retrieved {collection_name} collection statistics: {results}")
 
@@ -124,6 +141,7 @@ class MilvusConnector:
 
     async def load_collection(self, collection_name: str, replica_number: int = 1):
         try:
+            collection_name = await self._resolve_collection_name(collection_name)
             await self._client.load_collection(collection_name=collection_name, replica_number=replica_number)
         except Exception as e:
             logger.exception(f"Failed to load {collection_name} collection: {str(e)}")
@@ -131,6 +149,7 @@ class MilvusConnector:
 
     async def release_collection(self, collection_name: str):
         try:
+            collection_name = await self._resolve_collection_name(collection_name)
             await self._client.release_collection(collection_name=collection_name)
         except Exception as e:
             logger.exception(f"Failed to release {collection_name} collection: {str(e)}")
@@ -138,6 +157,7 @@ class MilvusConnector:
 
     async def insert_data(self, collection_name: str, data: list[dict[str, Any]]) -> dict[str, Any]:
         try:
+            collection_name = await self._resolve_collection_name(collection_name)
             return await self._client.insert(collection_name=collection_name, data=data)
         except Exception as e:
             logger.exception(f"Failed to insert data to {collection_name} collection: {str(e)}")
@@ -145,6 +165,7 @@ class MilvusConnector:
 
     async def delete_entities(self, collection_name: str, filter_expression: str) -> dict[str, Any]:
         try:
+            collection_name = await self._resolve_collection_name(collection_name)
             return await self._client.delete(collection_name=collection_name, filter=filter_expression)
         except Exception as e:
             logger.exception(f"Failed to delete data from {collection_name} using filter {filter_expression}:{str(e)}")
@@ -163,6 +184,7 @@ class MilvusConnector:
             range_filter: float | None = None
     ) -> VectorSearchResult:
         try:
+            collection_name = await self._resolve_collection_name(collection_name)
             search_params = {"metric_type": metric_type, "params": {"nprobe": 10}}
             if radius is not None:
                 search_params["params"]["radius"] = radius
@@ -205,6 +227,8 @@ class MilvusConnector:
             range_filter: float | None = None
     ) -> VectorSearchResult:
         try:
+            # Resolve up front so a missing collection fails before the image is fetched and embedded
+            collection_name = await self._resolve_collection_name(collection_name)
             output_fields = list(
                 set((output_fields or []) + [DataFields.DATA_URI, DataFields.FILENAME, DataFields.PREDICTION])
             )
@@ -213,7 +237,7 @@ class MilvusConnector:
             if not image_bytes:
                 raise ValueError(f"Failed to retrieve {data_uri} object from storage")
 
-            vector = await self._extractor.extract_feature_vector(collection_name, filename, image_bytes, content_type)
+            vector = await self._extractor.extract_feature_vector(filename, image_bytes, content_type)
             if not vector:
                 raise ValueError(f"Failed to extract feature vector from {data_uri} object")
 
@@ -290,6 +314,7 @@ class MilvusConnector:
             limit: int = LIMIT
     ) -> list[dict]:
         try:
+            collection_name = await self._resolve_collection_name(collection_name)
             return await self._client.query(
                 collection_name=collection_name,
                 filter=filter_expression,
@@ -311,8 +336,7 @@ class MilvusConnector:
             batch_size: int = BATCH_SIZE
     ) -> SamplingResult:
         try:
-            if not await self._client.has_collection(collection_name):
-                raise ValueError(f"Collection {collection_name} doesn't exist")
+            collection_name = await self._resolve_collection_name(collection_name)
             if await self._client.has_collection(f"{collection_name}{DETECTION_COLLECTION_SUFFIX}"):
                 collection_name += DETECTION_COLLECTION_SUFFIX
 

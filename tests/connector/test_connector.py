@@ -1,7 +1,7 @@
 import os
 import pytest
 
-from common.constants import DataFields, DETECTION_COLLECTION_SUFFIX
+from common.constants import DataFields, DETECTION_COLLECTION_SUFFIX, VFM_COLLECTION_PREFIX
 from milvus_mcp.schemas import SamplingResult, VectorSearchResult
 from milvus_mcp.connector.connector import MilvusConnector
 
@@ -69,6 +69,63 @@ class TestMilvusConnector:
             await mock_connector.get_collection_info("collection_b")
 
     @pytest.mark.asyncio
+    async def test_resolve_collection_name(self, mock_connector):
+        client = mock_connector._mock_client
+
+        # ABC exists -> ABC
+        client.has_collection.side_effect = [True]
+        assert await mock_connector._resolve_collection_name("ABC") == "ABC"
+        client.has_collection.assert_awaited_once_with("ABC")
+
+        # ABC missing, VFM_ABC exists -> VFM_ABC
+        client.has_collection.reset_mock()
+        client.has_collection.side_effect = [False, True]
+        assert await mock_connector._resolve_collection_name("ABC") == f"{VFM_COLLECTION_PREFIX}ABC"
+        assert [call.args[0] for call in client.has_collection.await_args_list] == ["ABC", f"{VFM_COLLECTION_PREFIX}ABC"]
+
+        # Neither exists -> error names the requested collection
+        client.has_collection.side_effect = [False, False]
+        with pytest.raises(ValueError, match="Collection ABC doesn't exist"):
+            await mock_connector._resolve_collection_name("ABC")
+
+        # An already prefixed name is not prefixed twice
+        client.has_collection.reset_mock()
+        client.has_collection.side_effect = [False]
+        with pytest.raises(ValueError, match="doesn't exist"):
+            await mock_connector._resolve_collection_name(f"{VFM_COLLECTION_PREFIX}ABC")
+        client.has_collection.assert_awaited_once_with(f"{VFM_COLLECTION_PREFIX}ABC")
+
+    @pytest.mark.asyncio
+    async def test_vfm_prefixed_collection_fallback(self, mock_connector):
+        client = mock_connector._mock_client
+        prefixed = f"{VFM_COLLECTION_PREFIX}collection_a"
+
+        client.has_collection.side_effect = [False, True]
+        await mock_connector.get_collection_stats("collection_a")
+        client.get_collection_stats.assert_awaited_once_with(prefixed)
+
+        client.has_collection.side_effect = [False, True]
+        await mock_connector.load_collection("collection_a")
+        assert client.load_collection.await_args.kwargs["collection_name"] == prefixed
+
+        client.has_collection.side_effect = [False, True]
+        await mock_connector.insert_data("collection_a", [{"vector": [1.0]}])
+        assert client.insert.await_args.kwargs["collection_name"] == prefixed
+
+        client.has_collection.side_effect = [False, True]
+        await mock_connector.query_collection("collection_a", "pk > 0")
+        assert client.query.await_args.kwargs["collection_name"] == prefixed
+
+        client.has_collection.side_effect = [False, True]
+        result = await mock_connector.vector_search("collection_a", [1.0, 2.0], "vector")
+        assert result.collection_name == prefixed
+        assert client.search.await_args.kwargs["collection_name"] == prefixed
+
+        client.has_collection.side_effect = [False, False]
+        with pytest.raises(ValueError, match="Collection collection_a doesn't exist"):
+            await mock_connector.vector_search("collection_a", [1.0, 2.0], "vector")
+
+    @pytest.mark.asyncio
     async def test_get_collection_stats(self, mock_connector):
         result = await mock_connector.get_collection_stats("collection_a")
         assert result == {"row_count": 42}
@@ -81,6 +138,7 @@ class TestMilvusConnector:
 
     @pytest.mark.asyncio
     async def test_create_collection(self, mock_connector):
+        mock_connector._mock_client.has_collection.return_value = False
         await mock_connector.create_collection("collection_c")
         assert mock_connector._mock_client.create_collection.await_count == 1
 
@@ -157,9 +215,7 @@ class TestMilvusConnector:
         assert result.search_data_keys == [462025919837366269, 462025919837366277]
 
         storage.retrieve_object.assert_awaited_once_with("data/uri.jpg")
-        extractor.extract_feature_vector.assert_awaited_once_with(
-            "collection_a", "image.jpg", b"image_bytes", "image/jpeg"
-        )
+        extractor.extract_feature_vector.assert_awaited_once_with("image.jpg", b"image_bytes", "image/jpeg")
         assert client.search.await_count == 1
         assert storage.get_presigned_url.await_count == 2
 
