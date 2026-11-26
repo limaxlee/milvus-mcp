@@ -1,15 +1,10 @@
-import json
 import logging
 from typing import Any
 from fastmcp.exceptions import ToolError
 from fastmcp.server import Context, FastMCP
 
 from common.constants import DIMENSION, METRIC_TYPE, LIMIT, BATCH_SIZE
-from milvus_mcp.schemas import (
-    ListDatabasesResult, ListCollectionsResult, CollectionInfoResult, CollectionStatsResult, CreateCollectionResult,
-    LoadCollectionResult, ReleaseCollectionResult, InsertDataResult, DeleteEntitiesResult, QueryResult,
-    SamplingResult, VectorSearchResult
-)
+from milvus_mcp.schemas import *
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +18,11 @@ async def milvus_list_databases(ctx: Context) -> ListDatabasesResult:
 
     Returns:
         Database list with the following fields:
-            - databases: Names of every database in the Milvus instance
+            databases: Names of every database in the Milvus DB
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        return ListDatabasesResult(databases=await connector.list_databases())
+        return await connector.list_databases()
     except Exception as e:
         raise ToolError(f"Failed to list databases: {str(e)}")
 
@@ -39,17 +34,17 @@ async def milvus_list_collections(ctx: Context) -> ListCollectionsResult:
 
     Returns:
         Collection list with the following fields:
-            - collections: Names of every collection in the configured database
+            collections: Names of every collection in the configured database
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        return ListCollectionsResult(collections=await connector.list_collections())
+        return await connector.list_collections()
     except Exception as e:
         raise ToolError(f"Failed to list collections: {str(e)}")
 
 
 @tools_mcp.tool()
-async def milvus_get_collection_info(collection_name: str, ctx: Context) -> CollectionInfoResult:
+async def milvus_get_collection_info(collection_name: str, ctx: Context) -> GetCollectionInfoResult:
     """
     Lists detailed information about a specific collection
 
@@ -58,27 +53,30 @@ async def milvus_get_collection_info(collection_name: str, ctx: Context) -> Coll
 
     Returns:
         Collection information with the following fields:
-            - collection_name: Name of the described collection
-            - classes: Number of data per prediction class
-            - collection_info: Collection description covering its schema, fields and settings
+            collection_name: Name of the collection
+            collection_id: ID of the collection
+            auto_id: Whether Milvus automatically generates the primary key for the collection
+            description: Description of the collection
+            num_shards: Number of the shards the collection has
+            num_partitions: Number of partitions in the collection
+            enable_namespace: Whether to use the namespace of the collection
+            enable_dynamic_field: Whether to use the reserved JSON field to save non-schema defined fields
+            aliases: List of the collection aliases
+            functions: Functions that have been defined in the collection schema
+            fields: List of fields in the collection
+            consistency_level: Consistency level of the collection
+            properties: Additional properties of the collection
+            classes: Number of data per prediction class
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        collection_info = await connector.get_collection_info(collection_name)
-        # The description carries values such as sets and enums, so coerce them the way the json dump used to
-        collection_info = json.loads(json.dumps(collection_info, default=list))
-
-        return CollectionInfoResult(
-            collection_name=collection_name,
-            classes=collection_info.pop("classes", {}),
-            collection_info=collection_info
-        )
+        return await connector.get_collection_info(collection_name)
     except Exception as e:
         raise ToolError(f"Failed to get {collection_name} collection info: {str(e)}")
 
 
 @tools_mcp.tool()
-async def milvus_get_collection_stats(collection_name: str, ctx: Context) -> CollectionStatsResult:
+async def milvus_get_collection_stats(collection_name: str, ctx: Context) -> GetCollectionStatsResult:
     """
     Lists the statistics collected on a specific collection
 
@@ -87,14 +85,12 @@ async def milvus_get_collection_stats(collection_name: str, ctx: Context) -> Col
 
     Returns:
         Collection statistics with the following fields:
-            - collection_name: Name of the inspected collection
-            - collection_stats: Statistics keyed by metric name, such as row_count
+            collection_name: Name of the collection
+            row_count: Number of data in the collection
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        collection_stats = await connector.get_collection_stats(collection_name)
-
-        return CollectionStatsResult(collection_name=collection_name, collection_stats=collection_stats)
+        return await connector.get_collection_stats(collection_name)
     except Exception as e:
         raise ToolError(f"Failed to get {collection_name} collection statistics: {str(e)}")
 
@@ -132,13 +128,13 @@ async def milvus_create_collection(
         other_kwargs: Additional keyword arguments for the collection creation
 
     Returns:
-        Creation result with the following fields:
-            - collection_name: Name of the created collection
-            - collection_created: Always true, a failed creation raises instead
+        Collection creation result with the following fields:
+            collection_name: Name of the created collection
+            collection_created: Always true, a failed creation raises error instead
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        await connector.create_collection(
+        return await connector.create_collection(
             collection_name=collection_name,
             auto_id=auto_id,
             dimension=dimension,
@@ -149,18 +145,12 @@ async def milvus_create_collection(
             index_params=index_params,
             **(other_kwargs if other_kwargs is not None else {})
         )
-
-        return CreateCollectionResult(collection_name=collection_name)
     except Exception as e:
         raise ToolError(f"Failed to create {collection_name} collection: {str(e)}")
 
 
 @tools_mcp.tool()
-async def milvus_load_collection(
-        ctx: Context,
-        collection_name: str,
-        replica_number: int = 1
-) -> LoadCollectionResult:
+async def milvus_load_collection(ctx: Context, collection_name: str, replica_number: int = 1) -> LoadCollectionResult:
     """
     Load a collection into memory for search and query.
 
@@ -169,16 +159,14 @@ async def milvus_load_collection(
         replica_number: Number of replicas
 
     Returns:
-        Load result with the following fields:
-            - collection_name: Name of the loaded collection
-            - collection_loaded: Always true, a failed load raises instead
-            - replica_number: Number of replicas the collection was loaded with
+        Collection load result with the following fields:
+            collection_name: Name of the loaded collection
+            collection_loaded: Always true, a failed load raises error instead
+            replica_number: Number of replicas the collection was loaded with
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        await connector.load_collection(collection_name=collection_name, replica_number=replica_number)
-
-        return LoadCollectionResult(collection_name=collection_name, replica_number=replica_number)
+        return await connector.load_collection(collection_name=collection_name, replica_number=replica_number)
     except Exception as e:
         raise ToolError(f"Failed to create {collection_name} collection: {str(e)}")
 
@@ -192,15 +180,13 @@ async def milvus_release_collection(collection_name: str, ctx: Context) -> Relea
         collection_name: Name of collection to release
 
     Returns:
-        Release result with the following fields:
-            - collection_name: Name of the released collection
-            - collection_released: Always true, a failed release raises instead
+        Collection release result with the following fields:
+            collection_name: Name of the released collection
+            collection_released: Always true, a failed release raises error instead
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        await connector.release_collection(collection_name=collection_name)
-
-        return ReleaseCollectionResult(collection_name=collection_name)
+        return await connector.release_collection(collection_name=collection_name)
     except Exception as e:
         raise ToolError(f"Failed to release {collection_name} collection: {str(e)}")
 
@@ -220,19 +206,13 @@ async def milvus_insert_data(
 
     Returns:
         Insert result with the following fields:
-            - collection_name: Name of the collection the data was inserted into
-            - insert_count: Number of inserted data
-            - primary_keys: Primary keys assigned to the inserted data
+            collection_name: Name of the collection the data was inserted into
+            insert_count: Number of inserted data
+            primary_keys: Primary keys assigned to the inserted data
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        result = await connector.insert_data(collection_name, data)
-
-        return InsertDataResult(
-            collection_name=collection_name,
-            insert_count=result.get("insert_count", 0),
-            primary_keys=result.get("ids", [])
-        )
+        return await connector.insert_data(collection_name, data)
     except Exception as e:
         raise ToolError(f"Failed to insert data to {collection_name} collection: {str(e)}")
 
@@ -252,14 +232,12 @@ async def milvus_delete_entities(
 
     Returns:
         Delete result with the following fields:
-            - collection_name: Name of the collection the entities were deleted from
-            - delete_count: Number of deleted entities
+            collection_name: Name of the collection the entities were deleted from
+            delete_count: Number of deleted entities
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        result = await connector.delete_entities(collection_name, filter_expression)
-
-        return DeleteEntitiesResult(collection_name=collection_name, delete_count=result.get("delete_count", 0))
+        return await connector.delete_entities(collection_name, filter_expression)
     except Exception as e:
         raise ToolError(f"Failed to delete data from {collection_name} using filter {filter_expression}: {str(e)}")
 
@@ -292,12 +270,12 @@ async def milvus_vector_search(
         range_filter: Optional upper bound for range search
 
     Returns:
-        Search result with the following fields:
-            - collection_name: Name of the searched collection
-            - search_data_count: Number of matches found
-            - search_data_keys: Primary keys of the matches, ordered from nearest to furthest
-            - search_data_distance: Distance of each match to the query vector, in the same order as search_data_keys
-            - search_data: Requested output fields of each match, keyed by primary key
+        Vector search result with the following fields:
+            collection_name: Name of the searched collection
+            search_data_count: Number of matches found
+            search_data_keys: Primary keys of the matches, ordered from nearest to furthest
+            search_data_distance: Distance of each match to the query vector, in the same order as search_data_keys
+            search_data: Requested output fields of each match, keyed by primary key
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -348,13 +326,14 @@ async def milvus_extract_embeddings_and_vector_search(
         range_filter: Optional upper bound for range search
 
     Returns:
-        Search result with the following fields:
-            - collection_name: Name of the searched collection
-            - search_data_count: Number of matches found
-            - search_data_keys: Primary keys of the matches, ordered from nearest to furthest
-            - search_data_distance: Distance of each match to the query vector, in the same order as search_data_keys
-            - search_data: Output fields of each match keyed by primary key, always including filename, prediction
-              and data_uri, where data_uri is a presigned download url which expires in 2 hours
+        Vector search result with the following fields:
+            collection_name: Name of the searched collection
+            search_data_count: Number of matches found
+            search_data_keys: Primary keys of the matches, ordered from nearest to furthest
+            search_data_distance: Distance of each match to the query vector, in the same order as search_data_keys
+            search_data: Output fields of each match keyed by primary key, always including filename, prediction,
+              and data_uri. Each data_uri contains a link ID used to look up the presigned URL in link_map
+            link_map: Mapping of link IDs to presigned download URLs, which expire in 2 hours
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -384,7 +363,7 @@ async def milvus_query_collection(
         filter_expression: str,
         output_fields: list[str] | None = None,
         limit: int = LIMIT
-) -> QueryResult:
+) -> QueryCollectionResult:
     """
     Query collection using filter expressions.
 
@@ -396,20 +375,18 @@ async def milvus_query_collection(
 
     Returns:
         Query result with the following fields:
-            - collection_name: Name of the queried collection
-            - query_data_count: Number of data matching the filter expression
-            - query_data: Matching data rows, empty when the filter expression matched nothing
+            collection_name: Name of the queried collection
+            query_data_count: Number of data matching the filter expression
+            query_data: Matching data rows, empty when the filter expression matched nothing
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        results = await connector.query_collection(
+        return await connector.query_collection(
             collection_name=collection_name,
             filter_expression=filter_expression,
             output_fields=output_fields,
             limit=limit
         )
-
-        return QueryResult(collection_name=collection_name, query_data_count=len(results), query_data=results)
     except Exception as e:
         raise ToolError(f"Failed to query from {collection_name} collection using {filter_expression}: {str(e)}")
 
@@ -439,14 +416,13 @@ async def milvus_get_k_center_sampled_data(
 
     Returns:
         Sampling result with the following fields:
-            - collection_name: Name of the sampled collection, suffixed with _object when the matching detection
-              collection is sampled instead
-            - total_scanned_data: Number of data scanned in the collection
-            - total_sampled_data_size: Number of data selected by sampling
-            - class_distribution: Number of sampled data per class
-            - sampled_data_keys: Primary keys of the sampled data
-            - sampled_data: Sampled data rows keyed by primary key, without the vector field
-            - sampled_zip_uri: Always empty, only milvus_get_k_center_sampled_data_as_zip_file fills it
+            collection_name: Name of the sampled collection
+            total_scanned_data: Number of data scanned in the collection
+            total_sampled_data_size: Number of data selected by sampling
+            class_distribution: Number of sampled data per class
+            sampled_data_keys: Primary keys of the sampled data
+            sampled_data: Sampled data rows keyed by primary key, without the vector field
+            sampled_zip_uri: Always empty, only milvus_get_k_center_sampled_data_as_zip_file fills it
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -489,15 +465,15 @@ async def milvus_get_k_center_sampled_data_as_zip_file(
 
     Returns:
         Sampling result with the following fields:
-            - collection_name: Name of the sampled collection, suffixed with _object when the matching detection
-              collection is sampled instead
-            - total_scanned_data: Number of data scanned in the collection
-            - total_sampled_data_size: Number of data selected by sampling
-            - class_distribution: Number of sampled data per class
-            - sampled_data_keys: Always empty, the sampled data is delivered through the zip file instead
-            - sampled_data: Always empty, the sampled data is delivered through the zip file instead
-            - sampled_zip_uri: Presigned download url for the zip file which expires in 2 hours, empty when sampling
-              matched no data
+            collection_name: Name of the sampled collection
+            total_scanned_data: Number of data scanned in the collection
+            total_sampled_data_size: Number of data selected by sampling
+            class_distribution: Number of sampled data per class
+            sampled_data_keys: Always empty; the sampled data is packaged in the ZIP file
+            sampled_data: Always empty; the sampled data is packaged in the ZIP file
+            sampled_zip_uri: Link ID used to look up the ZIP file's presigned URL in link_map;
+              empty when no data is sampled
+            link_map: Mapping of link IDs to presigned download URLs; empty when no data is sampled
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
@@ -511,4 +487,4 @@ async def milvus_get_k_center_sampled_data_as_zip_file(
             batch_size=batch_size
         )
     except Exception as e:
-        raise ToolError(f"Failed to package sampled data of collection {collection_name} as zip file: {str(e)}")
+        raise ToolError(f"Failed to k-center greedy sample data in collection {collection_name}: {str(e)}")

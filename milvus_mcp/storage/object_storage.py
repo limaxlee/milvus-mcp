@@ -1,3 +1,4 @@
+import aiofiles
 import logging
 from contextlib import AsyncExitStack
 from aiobotocore.session import get_session
@@ -5,7 +6,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from common.config import SETTINGS
-from common.constants import PRESIGNED_URL_EXPIRED_IN
+from common.constants import PRESIGNED_URL_EXPIRED_IN, MULTIPART_CHUNK_SIZE
 
 logger = logging.getLogger(__name__)
 
@@ -68,17 +69,6 @@ class ObjectStorage:
             logger.exception(f"Failed to retrieve object {key} from bucket {bucket}: {e}")
             return None
 
-    async def upload_file(self, file_path: str, key: str, bucket: str = None):
-        bucket = bucket if bucket else self._bucket
-        try:
-            with open(file_path, "rb") as file:
-                await self._client.put_object(Bucket=bucket, Key=key, Body=file)
-
-            logger.info(f"Uploaded {file_path} to {bucket}:{key}")
-        except Exception as e:
-            logger.exception(f"Failed to upload {file_path} to {bucket}:{key}: {e}")
-            raise
-
     async def get_presigned_url(self, key: str, bucket: str = None, expires_in: int = PRESIGNED_URL_EXPIRED_IN) -> str:
         bucket = bucket if bucket else self._bucket
         try:
@@ -92,4 +82,41 @@ class ObjectStorage:
             return response
         except Exception as e:
             logger.exception(f"Failed to generate presigned url for {key} from bucket {bucket}: {e}")
+            raise
+
+    async def upload_object(self, file_object: str | bytes, key: str, bucket: str = None):
+        bucket = bucket if bucket else self._bucket
+        try:
+            if isinstance(file_object, bytes):
+                await self._client.put_object(Bucket=bucket, Body=file_object, Key=key)
+            elif isinstance(file_object, str):
+                mpu = await self._client.create_multipart_upload(Bucket=bucket, Key=key)
+                upload_id = mpu["UploadId"]
+                parts = []
+
+                async with aiofiles.open(file_object, "rb") as f:
+                    part_number = 1
+                    while chunk := await f.read(MULTIPART_CHUNK_SIZE):
+                        response = await self._client.upload_part(
+                            Bucket=bucket,
+                            Key=key,
+                            PartNumber=part_number,
+                            UploadId=upload_id,
+                            Body=chunk
+                        )
+                        parts.append({"PartNumber": part_number, "ETag": response["ETag"]})
+                        part_number += 1
+
+                await self._client.complete_multipart_upload(
+                    Bucket=bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                    MultipartUpload={"Parts": parts},
+                )
+            else:
+                raise ValueError("Unsupported file type")
+
+            logger.info(f"Uploaded object to {bucket} as {key}")
+        except Exception as e:
+            logger.exception(f"Failed to upload object to {bucket} as {key}: {e}")
             raise

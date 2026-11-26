@@ -50,4 +50,3 @@ class TestCustomRoutes:
         mocker.patch("milvus_mcp.routes.routes.get_logs_zip_file", side_effect=Exception("MCP Error"))
         with pytest.raises(Exception, match="MCP Error"):
             await download_logs(request)
-            

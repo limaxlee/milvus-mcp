@@ -9,7 +9,6 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 LIMIT = 5
 METRIC_TYPE = "COSINE"
 
-# Feature extractor (dinov3_vit, hidden_size 1024 x layers [20, 24] -> patch_mean_concat)
 DIMENSION = 2048
 
 HEALTH_CHECK_TIMEOUT = 5.0
@@ -18,12 +17,13 @@ HEALTH_CHECK_PORT = 9091
 BATCH_SIZE = 1000
 
 DETECTION_COLLECTION_SUFFIX = "_object"
-# A collection may be stored under its own name or with this prefix (ABC -> VFM_ABC)
 VFM_COLLECTION_PREFIX = "VFM_"
 
 FEATURE_EXTRACTION_TIMEOUT = 60.0
-PRESIGNED_URL_EXPIRED_IN = 7200
+PRESIGNED_URL_EXPIRED_IN = 7200         # 2 hours
+MULTIPART_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
 
+OS_PREFIX = "MilvusMCP"
 ZIP_FETCH_CONCURRENCY = 16
 
 
@@ -43,4 +43,3 @@ class MetricTypes(StrEnum):
 
 class SamplingMethods(StrEnum):
     K_CENTER_GREEDY = "k_center_greedy"
-

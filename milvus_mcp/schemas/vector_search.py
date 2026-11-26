@@ -8,3 +8,4 @@ class VectorSearchResult(BaseModel):
     search_data_keys: list[Any] = []
     search_data_distance: list[float] = []
     search_data: dict[int, Any] = {}
+    link_map: dict[str, str] = {}

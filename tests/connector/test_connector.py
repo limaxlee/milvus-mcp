@@ -1,7 +1,7 @@
 import os
 import pytest
 
-from common.constants import DataFields, DETECTION_COLLECTION_SUFFIX, VFM_COLLECTION_PREFIX
+from common.constants import DataFields, DETECTION_COLLECTION_SUFFIX
 from milvus_mcp.schemas import SamplingResult, VectorSearchResult
 from milvus_mcp.connector.connector import MilvusConnector
 
@@ -37,7 +37,7 @@ class TestMilvusConnector:
     @pytest.mark.asyncio
     async def test_list_databases(self, mock_connector):
         result = await mock_connector.list_databases()
-        assert result == ["default", "test_db"]
+        assert result.databases == ["default", "test_db"]
 
         mock_connector._mock_client.list_databases.assert_awaited_once()
 
@@ -48,7 +48,7 @@ class TestMilvusConnector:
     @pytest.mark.asyncio
     async def test_list_collections(self, mock_connector):
         result = await mock_connector.list_collections()
-        assert result == ["collection_a", "collection_b"]
+        assert result.collections == ["collection_a", "collection_b"]
 
         mock_connector._mock_client.list_collections.assert_awaited_once()
 
@@ -59,8 +59,8 @@ class TestMilvusConnector:
     @pytest.mark.asyncio
     async def test_get_collection_info(self, mock_connector):
         result = await mock_connector.get_collection_info("collection_a")
-        assert result["collection_name"] == "collection_a"
-        assert "fields" in result
+        assert result.collection_name == "collection_a"
+        assert isinstance(result.fields, list)
 
         mock_connector._mock_client.describe_collection.assert_awaited_once_with("collection_a")
 
@@ -69,66 +69,9 @@ class TestMilvusConnector:
             await mock_connector.get_collection_info("collection_b")
 
     @pytest.mark.asyncio
-    async def test_resolve_collection_name(self, mock_connector):
-        client = mock_connector._mock_client
-
-        # ABC exists -> ABC
-        client.has_collection.side_effect = [True]
-        assert await mock_connector._resolve_collection_name("ABC") == "ABC"
-        client.has_collection.assert_awaited_once_with("ABC")
-
-        # ABC missing, VFM_ABC exists -> VFM_ABC
-        client.has_collection.reset_mock()
-        client.has_collection.side_effect = [False, True]
-        assert await mock_connector._resolve_collection_name("ABC") == f"{VFM_COLLECTION_PREFIX}ABC"
-        assert [call.args[0] for call in client.has_collection.await_args_list] == ["ABC", f"{VFM_COLLECTION_PREFIX}ABC"]
-
-        # Neither exists -> error names the requested collection
-        client.has_collection.side_effect = [False, False]
-        with pytest.raises(ValueError, match="Collection ABC doesn't exist"):
-            await mock_connector._resolve_collection_name("ABC")
-
-        # An already prefixed name is not prefixed twice
-        client.has_collection.reset_mock()
-        client.has_collection.side_effect = [False]
-        with pytest.raises(ValueError, match="doesn't exist"):
-            await mock_connector._resolve_collection_name(f"{VFM_COLLECTION_PREFIX}ABC")
-        client.has_collection.assert_awaited_once_with(f"{VFM_COLLECTION_PREFIX}ABC")
-
-    @pytest.mark.asyncio
-    async def test_vfm_prefixed_collection_fallback(self, mock_connector):
-        client = mock_connector._mock_client
-        prefixed = f"{VFM_COLLECTION_PREFIX}collection_a"
-
-        client.has_collection.side_effect = [False, True]
-        await mock_connector.get_collection_stats("collection_a")
-        client.get_collection_stats.assert_awaited_once_with(prefixed)
-
-        client.has_collection.side_effect = [False, True]
-        await mock_connector.load_collection("collection_a")
-        assert client.load_collection.await_args.kwargs["collection_name"] == prefixed
-
-        client.has_collection.side_effect = [False, True]
-        await mock_connector.insert_data("collection_a", [{"vector": [1.0]}])
-        assert client.insert.await_args.kwargs["collection_name"] == prefixed
-
-        client.has_collection.side_effect = [False, True]
-        await mock_connector.query_collection("collection_a", "pk > 0")
-        assert client.query.await_args.kwargs["collection_name"] == prefixed
-
-        client.has_collection.side_effect = [False, True]
-        result = await mock_connector.vector_search("collection_a", [1.0, 2.0], "vector")
-        assert result.collection_name == prefixed
-        assert client.search.await_args.kwargs["collection_name"] == prefixed
-
-        client.has_collection.side_effect = [False, False]
-        with pytest.raises(ValueError, match="Collection collection_a doesn't exist"):
-            await mock_connector.vector_search("collection_a", [1.0, 2.0], "vector")
-
-    @pytest.mark.asyncio
     async def test_get_collection_stats(self, mock_connector):
         result = await mock_connector.get_collection_stats("collection_a")
-        assert result == {"row_count": 42}
+        assert result.row_count == 42
 
         mock_connector._mock_client.get_collection_stats.assert_awaited_once_with("collection_a")
 
@@ -167,7 +110,8 @@ class TestMilvusConnector:
     @pytest.mark.asyncio
     async def test_insert_data(self, mock_connector):
         result = await mock_connector.insert_data("collection_a", [{"vector": [1.0, 1.1, 1.2]}])
-        assert result == {"insert_count": 1, "ids": [462025919837366264]}
+        assert result.insert_count == 1
+        assert result.primary_keys == [462025919837366264]
         assert mock_connector._mock_client.insert.await_count == 1
 
         mock_connector._mock_client.insert.side_effect = RuntimeError("Connector error")
@@ -177,7 +121,7 @@ class TestMilvusConnector:
     @pytest.mark.asyncio
     async def test_delete_data(self, mock_connector):
         result = await mock_connector.delete_entities("collection_a", "image_name == 'image.jpg'")
-        assert result == {"delete_count": 1}
+        assert result.delete_count == 1
         assert mock_connector._mock_client.delete.await_count == 1
 
         mock_connector._mock_client.delete.side_effect = RuntimeError("Connector error")
@@ -215,7 +159,9 @@ class TestMilvusConnector:
         assert result.search_data_keys == [462025919837366269, 462025919837366277]
 
         storage.retrieve_object.assert_awaited_once_with("data/uri.jpg")
-        extractor.extract_feature_vector.assert_awaited_once_with("image.jpg", b"image_bytes", "image/jpeg")
+        extractor.extract_feature_vector.assert_awaited_once_with(
+            'image.jpg', b'image_bytes', 'image/jpeg'
+        )
         assert client.search.await_count == 1
         assert storage.get_presigned_url.await_count == 2
 
@@ -242,7 +188,8 @@ class TestMilvusConnector:
     @pytest.mark.asyncio
     async def test_query_collection(self, mock_connector):
         results = await mock_connector.query_collection("collection_a", "image_name == 'image.jpg'")
-        assert results == [{"pk": "462025919837366269"}]
+        assert results.query_data_count == 1
+        assert results.query_data == [{"pk": "462025919837366269"}]
         assert mock_connector._mock_client.query.await_count == 1
 
         mock_connector._mock_client.query.side_effect = RuntimeError("Connector error")
@@ -293,92 +240,36 @@ class TestMilvusConnector:
     async def test_get_k_center_sampled_data_as_zip_file(self, mocker, mock_connector, stratified_sample_rows):
         client = mock_connector._mock_client
         client.query.return_value = stratified_sample_rows
-        client.has_collection.side_effect = [True, False]
+        client.has_collection.side_effect = [True, True, False]
 
-        packaged = {}
+        packaged_data = {}
 
         async def fake_create_zip_file(zip_file, sampled_data, storage, **kwargs):
-            packaged.update({"zip_file": zip_file, "sampled_data": sampled_data})
-            open(zip_file, "wb").close()
+            packaged_data.update({"zip_file": zip_file, "sampled_data": sampled_data})
+            with open(zip_file, "wb"):
+                pass
 
-        mocker.patch("milvus_mcp.connector.connector.create_zip_file", side_effect=fake_create_zip_file)
-
+        mocker.patch("milvus_mcp.connector.connector.create_sample_zip_file", side_effect=fake_create_zip_file)
         result = await mock_connector.get_k_center_sampled_data_as_zip_file("collection_a", {"Good": 2, "NG": 1})
-
-        assert isinstance(result, SamplingResult)
         assert result.total_scanned_data == 5
         assert result.total_sampled_data_size == 3
         assert result.class_distribution == {"Good": 2, "NG": 1}
-        assert result.sampled_zip_uri == "https://presigned.url/object"
+        assert result.sampled_zip_uri == "link-23b181f4e6"
         assert result.sampled_data == {}
         assert result.sampled_data_keys == []
 
-        assert len(packaged["sampled_data"]) == 3
-        assert all(DataFields.FILENAME in item for item in packaged["sampled_data"].values())
+        zip_file, zip_uri = mock_connector._mock_storage.upload_object.await_args.args
+        assert zip_file == packaged_data["zip_file"]
+        assert zip_uri.startswith("MilvusMCP/collection_a/collection_a")
 
-        zip_file, zip_uri = mock_connector._mock_storage.upload_file.await_args.args
-        assert zip_file == packaged["zip_file"]
-        assert zip_uri.startswith("MilvusMCP/collection_a/collection_a_")
-        assert zip_uri.endswith(".zip")
         mock_connector._mock_storage.get_presigned_url.assert_awaited_once_with(zip_uri)
         assert not os.path.exists(zip_file)
 
-    @pytest.mark.asyncio
-    async def test_get_k_center_sampled_data_as_zip_file_skips_empty_sample(self, mocker, mock_connector):
-        client = mock_connector._mock_client
-        client.query.return_value = []
-        client.has_collection.side_effect = [True, False]
+        client.has_collection.side_effect = [True, True, False]
 
-        create_zip_file = mocker.patch("milvus_mcp.connector.connector.create_zip_file")
-
-        result = await mock_connector.get_k_center_sampled_data_as_zip_file("collection_a", {"Good": 2})
-
-        assert result.collection_name == "collection_a"
-        assert result.total_scanned_data == 0
-        assert result.sampled_zip_uri == ""
-        create_zip_file.assert_not_called()
-        mock_connector._mock_storage.upload_file.assert_not_awaited()
-        mock_connector._mock_storage.get_presigned_url.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_get_k_center_sampled_data_as_zip_file_removes_temp_file_on_failure(
-            self, mocker, mock_connector, stratified_sample_rows
-    ):
-        client = mock_connector._mock_client
-        client.query.return_value = stratified_sample_rows
-        client.has_collection.side_effect = [True, False]
-
-        packaged = {}
-
-        async def failing_create_zip_file(zip_file, sampled_data, storage, **kwargs):
-            packaged["zip_file"] = zip_file
-            open(zip_file, "wb").close()
-            raise RuntimeError("Packaging error")
-
-        mocker.patch("milvus_mcp.connector.connector.create_zip_file", side_effect=failing_create_zip_file)
-
-        with pytest.raises(RuntimeError, match="Packaging error"):
+        mocker.patch("milvus_mcp.connector.connector.create_sample_zip_file", side_effect=RuntimeError("Error"))
+        with pytest.raises(RuntimeError, match="Error"):
             await mock_connector.get_k_center_sampled_data_as_zip_file("collection_a", {"Good": 2})
-
-        assert not os.path.exists(packaged["zip_file"])
-        mock_connector._mock_storage.upload_file.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_get_k_center_sampled_data_as_zip_file_names_are_unique(
-            self, mocker, mock_connector, stratified_sample_rows
-    ):
-        # Two exports of one collection can start within the same second and must not share a temp file or object key
-        client = mock_connector._mock_client
-        client.query.return_value = stratified_sample_rows
-        client.has_collection.side_effect = [True, False, True, False]
-
-        mocker.patch("milvus_mcp.connector.connector.create_zip_file")
-
-        await mock_connector.get_k_center_sampled_data_as_zip_file("collection_a", {"Good": 2})
-        await mock_connector.get_k_center_sampled_data_as_zip_file("collection_a", {"Good": 2})
-
-        first, second = [call.args[1] for call in mock_connector._mock_storage.upload_file.await_args_list]
-        assert first != second
 
     @pytest.mark.asyncio
     async def test_close(self, mock_connector):

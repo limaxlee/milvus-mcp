@@ -103,36 +103,6 @@ class TestObjectStorage:
         assert await storage_client.retrieve_object("images/image.jpg") is None
 
     @pytest.mark.asyncio
-    async def test_upload_file(self, mocker, storage_client, mock_s3_client, tmp_path):
-        await storage_client.connect()
-
-        uploaded = {}
-
-        async def capture(Bucket, Key, Body):
-            uploaded.update({"bucket": Bucket, "key": Key, "body": Body.read()})
-            return {}
-
-        mock_s3_client.put_object = mocker.AsyncMock(side_effect=capture)
-
-        zip_file = tmp_path / "sampled.zip"
-        zip_file.write_bytes(b"zip-bytes")
-
-        await storage_client.upload_file(str(zip_file), "MilvusMCP/collection_a/sampled.zip")
-
-        assert uploaded == {
-            "bucket": storage_client._bucket,
-            "key": "MilvusMCP/collection_a/sampled.zip",
-            "body": b"zip-bytes"
-        }
-
-        await storage_client.upload_file(str(zip_file), "sampled.zip", bucket="other-bucket")
-        assert uploaded["bucket"] == "other-bucket"
-
-        mock_s3_client.put_object.side_effect = RuntimeError("Storage error")
-        with pytest.raises(RuntimeError, match="Storage error"):
-            await storage_client.upload_file(str(zip_file), "sampled.zip")
-
-    @pytest.mark.asyncio
     async def test_get_presigned_url(self, mocker, storage_client, mock_s3_client):
         await storage_client.connect()
         mock_s3_client.generate_presigned_url = mocker.AsyncMock(return_value="https://presigned/image.jpg")
@@ -155,3 +125,36 @@ class TestObjectStorage:
         mock_s3_client.generate_presigned_url.side_effect = RuntimeError("Storage error")
         with pytest.raises(RuntimeError):
             await storage_client.get_presigned_url("images/image.jpg")
+
+    @pytest.mark.asyncio
+    async def test_upload_object(self, mocker, storage_client, mock_s3_client, tmp_path):
+        await storage_client.connect()
+
+        mock_s3_client.create_multipart_upload = mocker.AsyncMock(return_value={"UploadId": "upload-1"})
+        mock_s3_client.upload_part = mocker.AsyncMock(return_value={"ETag": "ETag"})
+        mock_s3_client.complete_multipart_upload = mocker.AsyncMock(return_value={})
+
+        zip_file = tmp_path / "sampled.zip"
+        zip_file.write_bytes(b"zip-bytes")
+
+        await storage_client.upload_object(str(zip_file), "MilvusMCP/collection_a/sampled.zip")
+
+        mock_s3_client.create_multipart_upload.assert_awaited_with(
+            Bucket=storage_client._bucket, Key="MilvusMCP/collection_a/sampled.zip"
+        )
+        mock_s3_client.upload_part.assert_awaited_with(
+            Bucket=storage_client._bucket,
+            Key="MilvusMCP/collection_a/sampled.zip",
+            PartNumber=1,
+            UploadId="upload-1",
+            Body=b"zip-bytes",
+        )
+        mock_s3_client.complete_multipart_upload.assert_awaited_with(
+            Bucket=storage_client._bucket,
+            Key="MilvusMCP/collection_a/sampled.zip",
+            UploadId="upload-1",
+            MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": "ETag"}]},
+        )
+
+        await storage_client.upload_object(str(zip_file), "sampled.zip", bucket="other-bucket")
+        assert mock_s3_client.create_multipart_upload.await_args.kwargs["Bucket"] == "other-bucket"

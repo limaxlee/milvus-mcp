@@ -7,4 +7,3 @@ class TestMilvusContext:
         ctx = MilvusContext(connector)
 
         assert ctx.connector is connector
-        

@@ -10,24 +10,22 @@ from concurrent.futures import ProcessPoolExecutor
 
 from common.constants import ROOT_DIR
 
-_executor: ProcessPoolExecutor | None = None
+
+class ExecutorHolder:
+    instance: ProcessPoolExecutor | None = None
 
 
 def _get_executor() -> ProcessPoolExecutor:
-    # Created on first use so that importing this module, which every spawned worker does, costs nothing
-    global _executor
-    if _executor is None:
+    if ExecutorHolder.instance is None:
         spawn_ctx = multiprocessing.get_context("spawn")
-        _executor = ProcessPoolExecutor(max_workers=os.cpu_count(), mp_context=spawn_ctx)
-
-    return _executor
+        ExecutorHolder.instance = ProcessPoolExecutor(max_workers=os.cpu_count(), mp_context=spawn_ctx)
+    return ExecutorHolder.instance
 
 
 def shutdown_logs_executor() -> None:
-    global _executor
-    if _executor is not None:
-        _executor.shutdown(wait=True)
-        _executor = None
+    if ExecutorHolder.instance is not None:
+        ExecutorHolder.instance.shutdown(wait=True)
+        ExecutorHolder.instance = None
 
 
 class LogConfig:

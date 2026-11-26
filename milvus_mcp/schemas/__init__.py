@@ -1,8 +1,8 @@
 from .collection import (
-    ListCollectionsResult, CollectionInfoResult, CollectionStatsResult, CreateCollectionResult,
-    LoadCollectionResult, ReleaseCollectionResult
+    ListCollectionsResult, GetCollectionInfoResult, GetCollectionStatsResult,
+    CreateCollectionResult, LoadCollectionResult, ReleaseCollectionResult
 )
-from .data import InsertDataResult, DeleteEntitiesResult, QueryResult
+from .entity import InsertDataResult, DeleteEntitiesResult, QueryCollectionResult
 from .database import ListDatabasesResult
 from .sampling import SamplingResult
 from .vector_search import VectorSearchResult

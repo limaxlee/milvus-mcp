@@ -1,4 +1,5 @@
 from typing import Any
+
 from pydantic import BaseModel
 
 
@@ -6,15 +7,26 @@ class ListCollectionsResult(BaseModel):
     collections: list[str] = []
 
 
-class CollectionInfoResult(BaseModel):
+class GetCollectionInfoResult(BaseModel):
     collection_name: str
+    collection_id: int
+    auto_id: bool
+    description: str
+    num_shards: int
+    num_partitions: int = 0
+    enable_namespace: bool
+    enable_dynamic_field: bool
+    aliases: list[Any] = []
     classes: dict[str, int] = {}
-    collection_info: dict[str, Any] = {}
+    fields: list[dict[Any, Any]] = []
+    functions: list[Any] = []
+    consistency_level: int = 0
+    properties: dict[str, Any] = {}
 
 
-class CollectionStatsResult(BaseModel):
+class GetCollectionStatsResult(BaseModel):
     collection_name: str
-    collection_stats: dict[str, Any] = {}
+    row_count: int
 
 
 class CreateCollectionResult(BaseModel):

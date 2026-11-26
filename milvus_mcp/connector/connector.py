@@ -1,20 +1,21 @@
 import os
+import re
+import hashlib
 import logging
-from uuid import uuid4
 from typing import Any
 from collections import Counter
 from pymilvus import AsyncMilvusClient, DataType
 
 from common.config import SETTINGS
 from common.constants import (
-    TEMP_DIR, DIMENSION, METRIC_TYPE, LIMIT, BATCH_SIZE, DETECTION_COLLECTION_SUFFIX, VFM_COLLECTION_PREFIX,
-    DataFields, SamplingMethods
+    TEMP_DIR, DIMENSION, METRIC_TYPE, LIMIT, BATCH_SIZE, DETECTION_COLLECTION_SUFFIX,
+    OS_PREFIX, VFM_COLLECTION_PREFIX, DataFields, SamplingMethods
 )
 from milvus_mcp.extractor import FeatureExtractor
 from milvus_mcp.storage import ObjectStorage
 from milvus_mcp.sampling import sample_data
-from milvus_mcp.schemas import SamplingResult, VectorSearchResult
-from milvus_mcp.utils import create_zip_file, get_current_utc_time_as_string
+from milvus_mcp.schemas import *
+from milvus_mcp.utils import create_sample_zip_file, remove_sample_zip_file, get_current_utc_time_as_string
 
 logger = logging.getLogger(__name__)
 
@@ -27,63 +28,71 @@ class MilvusConnector:
         self._storage = storage
         self._extractor = FeatureExtractor()
 
+    @staticmethod
+    def _sanitize_collection_name(collection_name: str) -> str:
+        return re.sub(r"[^0-9A-Za-z_]", "_", collection_name)
+
     async def _resolve_collection_name(self, collection_name: str) -> str:
-        """Return the existing collection name for the input, falling back to the VFM_-prefixed one.
+        try:
+            collection_name = self._sanitize_collection_name(collection_name)
+            if await self._client.has_collection(collection_name):
+                return collection_name
 
-        ABC -> ABC if it exists, else VFM_ABC if it exists, else raise ValueError.
-        """
-        if await self._client.has_collection(collection_name):
-            return collection_name
+            prefix_name = f"{VFM_COLLECTION_PREFIX}{collection_name}"
+            if not collection_name.startswith(VFM_COLLECTION_PREFIX) and await self._client.has_collection(prefix_name):
+                logger.info(f"Collection {collection_name} doesn't exist, using {prefix_name} instead")
+                return prefix_name
 
-        prefixed_name = f"{VFM_COLLECTION_PREFIX}{collection_name}"
-        if not collection_name.startswith(VFM_COLLECTION_PREFIX) and await self._client.has_collection(prefixed_name):
-            logger.info(f"Collection {collection_name} doesn't exist, using {prefixed_name} instead")
-            return prefixed_name
+            raise ValueError(f"Collection {collection_name} doesn't exist")
+        except Exception as e:
+            logger.exception(f"Failed to resolve collection name {collection_name}: {str(e)}")
+            raise
 
-        raise ValueError(f"Collection {collection_name} doesn't exist")
-
-    async def list_databases(self) -> list[str]:
+    async def list_databases(self) -> ListDatabasesResult:
         try:
             results = await self._client.list_databases()
             logger.info(f"Listed databases: {results}")
 
-            return results
+            return ListDatabasesResult(databases=results)
         except Exception as e:
             logger.exception(f"Failed to list databases: {str(e)}")
             raise
 
-    async def list_collections(self) -> list[str]:
+    async def list_collections(self) -> ListCollectionsResult:
         try:
             result = await self._client.list_collections()
             logger.info(f"Listed collections: {result}")
 
-            return result
+            return ListCollectionsResult(collections=result)
         except Exception as e:
             logger.exception(f"Failed to list collections: {str(e)}")
             raise
 
-    async def get_collection_info(self, collection_name: str) -> dict:
+    async def get_collection_info(self, collection_name: str) -> GetCollectionInfoResult:
         try:
             collection_name = await self._resolve_collection_name(collection_name)
             result = await self._client.describe_collection(collection_name)
+
+            if await self._client.has_collection(f"{collection_name}{DETECTION_COLLECTION_SUFFIX}"):
+                collection_name += DETECTION_COLLECTION_SUFFIX
             data_rows = await self._scan_data(collection_name, [])
             counter = Counter(row.get(DataFields.PREDICTION) for row in data_rows)
 
             result["classes"] = {str(value): count for value, count in counter.most_common()}
             logger.info(f"Retrieved {collection_name} collection info: {result}")
 
-            return result
+            return GetCollectionInfoResult(**result)
         except Exception as e:
             logger.exception(f"Failed to get {collection_name} collection info: {str(e)}")
             raise
 
-    async def get_collection_stats(self, collection_name: str) -> dict[str, Any]:
+    async def get_collection_stats(self, collection_name: str) -> GetCollectionStatsResult:
         try:
             collection_name = await self._resolve_collection_name(collection_name)
             results = await self._client.get_collection_stats(collection_name)
             logger.info(f"Retrieved {collection_name} collection statistics: {results}")
 
-            return results
+            return GetCollectionStatsResult(collection_name=collection_name, row_count=results["row_count"])
         except Exception as e:
             logger.exception(f"Failed to get {collection_name} collection statistics: {str(e)}")
             raise
@@ -99,8 +108,9 @@ class MilvusConnector:
             field_schema: list[dict[str, Any]] | None = None,
             index_params: list[dict[str, Any]] | None = None,
             **kwargs: Any
-    ):
+    ) -> CreateCollectionResult:
         try:
+            collection_name = self._sanitize_collection_name(collection_name)
             if await self._client.has_collection(collection_name):
                 raise ValueError(f"Collection {collection_name} already exists")
 
@@ -135,38 +145,51 @@ class MilvusConnector:
                 index_params=built_index_params if index_params is not None else None,
                 **kwargs
             )
+
+            return CreateCollectionResult(collection_name=collection_name)
         except Exception as e:
             logger.exception(f"Failed to create {collection_name} collection: {str(e)}")
             raise
 
-    async def load_collection(self, collection_name: str, replica_number: int = 1):
+    async def load_collection(self, collection_name: str, replica_number: int = 1) -> LoadCollectionResult:
         try:
             collection_name = await self._resolve_collection_name(collection_name)
             await self._client.load_collection(collection_name=collection_name, replica_number=replica_number)
+            return LoadCollectionResult(collection_name=collection_name, replica_number=replica_number)
         except Exception as e:
             logger.exception(f"Failed to load {collection_name} collection: {str(e)}")
             raise
 
-    async def release_collection(self, collection_name: str):
+    async def release_collection(self, collection_name: str) -> ReleaseCollectionResult:
         try:
             collection_name = await self._resolve_collection_name(collection_name)
             await self._client.release_collection(collection_name=collection_name)
+            return ReleaseCollectionResult(collection_name=collection_name)
         except Exception as e:
             logger.exception(f"Failed to release {collection_name} collection: {str(e)}")
             raise
 
-    async def insert_data(self, collection_name: str, data: list[dict[str, Any]]) -> dict[str, Any]:
+    async def insert_data(self, collection_name: str, data: list[dict[str, Any]]) -> InsertDataResult:
         try:
             collection_name = await self._resolve_collection_name(collection_name)
-            return await self._client.insert(collection_name=collection_name, data=data)
+            result = await self._client.insert(collection_name=collection_name, data=data)
+            return InsertDataResult(
+                collection_name=collection_name,
+                insert_count=result.get("insert_count", 0),
+                primary_keys=result.get("ids", [])
+            )
         except Exception as e:
             logger.exception(f"Failed to insert data to {collection_name} collection: {str(e)}")
             raise
 
-    async def delete_entities(self, collection_name: str, filter_expression: str) -> dict[str, Any]:
+    async def delete_entities(self, collection_name: str, filter_expression: str) -> DeleteEntitiesResult:
         try:
             collection_name = await self._resolve_collection_name(collection_name)
-            return await self._client.delete(collection_name=collection_name, filter=filter_expression)
+            result = await self._client.delete(collection_name=collection_name, filter=filter_expression)
+            return DeleteEntitiesResult(
+                collection_name=collection_name,
+                delete_count=result.get("delete_count", 0)
+            )
         except Exception as e:
             logger.exception(f"Failed to delete data from {collection_name} using filter {filter_expression}:{str(e)}")
             raise
@@ -227,7 +250,6 @@ class MilvusConnector:
             range_filter: float | None = None
     ) -> VectorSearchResult:
         try:
-            # Resolve up front so a missing collection fails before the image is fetched and embedded
             collection_name = await self._resolve_collection_name(collection_name)
             output_fields = list(
                 set((output_fields or []) + [DataFields.DATA_URI, DataFields.FILENAME, DataFields.PREDICTION])
@@ -254,7 +276,10 @@ class MilvusConnector:
             )
 
             for key, item in result.search_data.items():
-                item[DataFields.DATA_URI] = await self._storage.get_presigned_url(item[DataFields.DATA_URI])
+                presigned_url = await self._storage.get_presigned_url(item[DataFields.DATA_URI])
+                link_id = f"link-{hashlib.sha1(presigned_url.encode()).hexdigest()[:10]}"
+                result.link_map[link_id] = presigned_url
+                item[DataFields.DATA_URI] = link_id
 
             logger.info(f"Extracted embedding and did vector search of data {data_uri} in {collection_name} collection")
             return result
@@ -312,14 +337,20 @@ class MilvusConnector:
             filter_expression: str,
             output_fields: list[str] | None = None,
             limit: int = LIMIT
-    ) -> list[dict]:
+    ) -> QueryCollectionResult:
         try:
             collection_name = await self._resolve_collection_name(collection_name)
-            return await self._client.query(
+            result = await self._client.query(
                 collection_name=collection_name,
                 filter=filter_expression,
                 output_fields=output_fields,
                 limit=limit
+            )
+
+            return QueryCollectionResult(
+                collection_name=collection_name,
+                query_data_count=len(result),
+                query_data=result
             )
         except Exception as e:
             logger.exception(f"Failed to query from {collection_name} collection using {filter_expression}: {str(e)}")
@@ -371,12 +402,13 @@ class MilvusConnector:
             output_fields: list[str] | None = None,
             batch_size: int = BATCH_SIZE
     ) -> SamplingResult:
-        # Two exports of the same collection can start within the same second, so the suffix keeps them apart
-        zip_name = f"{collection_name}_{get_current_utc_time_as_string()}_{uuid4().hex[:8]}.zip"
+        collection_name = await self._resolve_collection_name(collection_name)
+
+        zip_name = f"{collection_name}_{get_current_utc_time_as_string()}.zip"
+        zip_uri = f"{OS_PREFIX}/{collection_name}/{zip_name}"
         zip_file = os.path.join(TEMP_DIR, zip_name)
-        zip_uri = f"MilvusMCP/{collection_name}/{zip_name}"
         try:
-            sample_result = await self.get_k_center_sampled_data(
+            result = await self.get_k_center_sampled_data(
                 collection_name=collection_name,
                 sample_classes=sample_classes,
                 vector_field=vector_field,
@@ -386,23 +418,25 @@ class MilvusConnector:
                 batch_size=batch_size
             )
 
-            result = sample_result.model_copy(update={"sampled_data": {}, "sampled_data_keys": []})
-            if not sample_result.sampled_data:
+            zip_result = result.model_copy(update={"sampled_data": {}, "sampled_data_keys": []})
+            if not result.sampled_data:
                 logger.warning(f"No data sampled in {collection_name} collection, skipped zip file packaging")
-                return result
+                return zip_result
 
-            await create_zip_file(zip_file, sample_result.sampled_data, self._storage)
-            await self._storage.upload_file(zip_file, zip_uri)
-            result.sampled_zip_uri = await self._storage.get_presigned_url(zip_uri)
+            await create_sample_zip_file(zip_file, result.sampled_data, self._storage)
+            await self._storage.upload_object(zip_file, zip_uri)
+            presigned_url = await self._storage.get_presigned_url(zip_uri)
+            link_id = f"link-{hashlib.sha1(presigned_url.encode()).hexdigest()[:10]}"
+            zip_result.link_map[link_id] = presigned_url
+            zip_result.sampled_zip_uri = link_id
 
             logger.info(f"K-center greedy sampled data in {collection_name} collection and uploaded to OS: {zip_uri}")
-            return result
+            return zip_result
         except Exception as e:
             logger.exception(f"Failed to package sampled data of {collection_name} collection as zip file: {str(e)}")
             raise
         finally:
-            if os.path.exists(zip_file):
-                os.remove(zip_file)
+            remove_sample_zip_file(zip_file)
 
     async def close(self):
         try:

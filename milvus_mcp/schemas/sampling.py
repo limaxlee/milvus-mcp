@@ -10,3 +10,4 @@ class SamplingResult(BaseModel):
     sampled_data_keys: list[Any] = []
     sampled_data: dict[int, Any] = {}
     sampled_zip_uri: str = ""
+    link_map: dict[str, str] = {}

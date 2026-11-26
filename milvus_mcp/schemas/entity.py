@@ -13,7 +13,7 @@ class DeleteEntitiesResult(BaseModel):
     delete_count: int = 0
 
 
-class QueryResult(BaseModel):
+class QueryCollectionResult(BaseModel):
     collection_name: str
     query_data_count: int = 0
     query_data: list[dict[str, Any]] = []

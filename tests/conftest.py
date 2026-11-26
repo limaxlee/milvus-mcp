@@ -48,7 +48,10 @@ def mock_async_milvus_client(mocker):
             "description": "test collection",
             "fields": [
                 {"name": "id", "type": 5, "is_primary": True}
-            ]
+            ],
+            "collection_id": 1234,
+            "enable_namespace": True,
+            "enable_dynamic_field": True
         }
     )
     client.get_collection_stats = mocker.AsyncMock(return_value={"row_count": 42})
@@ -90,7 +93,7 @@ def mock_connector(mocker, mock_async_milvus_client):
 
     storage = mocker.MagicMock()
     storage.retrieve_object = mocker.AsyncMock(return_value=b"image_bytes")
-    storage.upload_file = mocker.AsyncMock(return_value=None)
+    storage.upload_object = mocker.AsyncMock(return_value=None)
     storage.get_presigned_url = mocker.AsyncMock(return_value="https://presigned.url/object")
 
     connector = MilvusConnector(storage)

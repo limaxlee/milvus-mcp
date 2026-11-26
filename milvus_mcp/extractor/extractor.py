@@ -1,6 +1,5 @@
 import logging
 from typing import Any
-
 from httpx import AsyncClient, TimeoutException
 
 from common.config import SETTINGS
@@ -10,12 +9,6 @@ logger = logging.getLogger(__name__)
 
 
 class FeatureExtractor:
-    """Client for the feature extraction API (`POST /features`).
-
-    The API accepts a multipart image upload and responds with a JSON document whose
-    `feature_vector.data` holds the embedding as a list of floats.
-    """
-
     def __init__(self):
         self._url = f"http://{SETTINGS.feature_extractor.host}:{SETTINGS.feature_extractor.port}/features"
 
@@ -26,14 +19,6 @@ class FeatureExtractor:
             content_type: str,
             params: dict[str, Any] | None = None
     ) -> list[float]:
-        """Extract the feature vector of an image.
-
-        Args:
-            filename: Name of the uploaded image (reported back by the API).
-            object_bytes: Raw image bytes.
-            content_type: MIME type of the image (jpeg, png, bmp, webp, tiff).
-            params: Optional query parameters forwarded to the API (`ExtractFeaturesRequest`).
-        """
         try:
             async with AsyncClient(timeout=FEATURE_EXTRACTION_TIMEOUT) as client:
                 response = await client.post(
